@@ -1,0 +1,61 @@
+{% extends "base.html" %}
+{% block content %}
+<h2>Editar Viatura</h2>
+
+<form method="post" id="viatura-form">
+  <div class="row">
+    <label>Matrícula
+      <input type="text" name="matricula" value="{{ viatura.matricula }}" required>
+    </label>
+    <label>Nº de frota
+      <input type="text" name="num_frota" value="{{ viatura.num_frota }}">
+    </label>
+    <label style="display:flex;align-items:center;gap:8px;">
+      Região
+      <input type="text" id="regiao-input" name="regiao" value="{{ viatura.regiao or '' }}"
+        readonly style="background:#eee; margin-left:8px;">
+      {% if user_role|lower|trim == 'admin' %}
+        <button type="button" id="editar-regiao-btn" class="btn btn-secondary">Alterar região</button>
+      {% endif %}
+    </label>
+    <label>Operação
+      <input type="text" name="operacao" value="{{ viatura.operacao }}">
+    </label>
+    <label>Marca
+      <input type="text" name="marca" value="{{ viatura.marca }}">
+    </label>
+    <label>Modelo
+      <input type="text" name="modelo" value="{{ viatura.modelo }}">
+    </label>
+    <label>Ativo
+      <select name="ativo">
+        <option value="1" {% if viatura.ativo == 1 %}selected{% endif %}>Sim</option>
+        <option value="0" {% if viatura.ativo == 0 %}selected{% endif %}>Não</option>
+      </select>
+    </label>
+  </div>
+  <div class="row">
+    <label>Verificação de Limpeza
+      <select name="verificacao_limpeza">
+        <option value="">— selecione —</option>
+        <option value="Conforme" {% if viatura.verificacao_limpeza == "Conforme" %}selected{% endif %}>Conforme</option>
+        <option value="Não conforme" {% if viatura.verificacao_limpeza == "Não conforme" %}selected{% endif %}>Não conforme</option>
+      </select>
+    </label>
+  </div>
+  <button type="submit" class="btn btn-primary">Guardar</button>
+  <a class="btn" href="{{ url_for('viaturas') }}">Cancelar</a>
+</form>
+
+{% if user_role|lower|trim == 'admin' %}
+<script>
+  document.getElementById('editar-regiao-btn').onclick = function() {
+    var regiaoInput = document.getElementById('regiao-input');
+    regiaoInput.readOnly = false;
+    regiaoInput.style.background = "#fff";
+    regiaoInput.focus();
+    this.disabled = true;
+  };
+</script>
+{% endif %}
+{% endblock %}

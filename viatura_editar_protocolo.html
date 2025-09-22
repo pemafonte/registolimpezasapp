@@ -1,0 +1,13 @@
+{% extends "base.html" %}
+{% block content %}
+<h2>Editar Tipo de Protocolo — {{ v.matricula }}</h2>
+<form method="post" class="card" style="max-width:520px">
+  <label>Tipo de Protocolo
+    <input name="tipo_protocolo" value="{{ v.tipo_protocolo or '' }}" placeholder="ex.: Semanal / Mensal / ...">
+  </label>
+  <div style="margin-top:10px">
+    <button class="btn">Guardar</button>
+    <a class="btn" href="{{ url_for('viaturas') }}">Cancelar</a>
+  </div>
+</form>
+{% endblock %}

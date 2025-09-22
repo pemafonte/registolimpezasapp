@@ -1,0 +1,36 @@
+{% extends "base.html" %}
+{% block content %}
+  <h2>Registos de Limpeza em Progresso</h2>
+  <table>
+    <thead>
+      <tr>
+        <th>#</th>
+        <th>Data/Hora</th>
+        <th>Matrícula</th>
+        <th>Protocolo</th>
+        <th>Funcionário</th>
+        <th>Local</th>
+        <th>Hora Início</th>
+        <th>Finalizar</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for r in registos %}
+      <tr>
+        <td>{{ r.registo_id }}</td>
+        <td>{{ r.data_hora }}</td>
+        <td>{{ r.matricula }}</td>
+        <td>{{ r.protocolo }}</td>
+        <td>{{ r.funcionario }}</td>
+        <td>{{ r.local }}</td>
+        <td>{{ r.hora_inicio }}</td>
+        <td>
+          <form method="post" action="{{ url_for('finalizar_registo', registo_id=r.registo_id) }}">
+            <button class="btn btn-primary" type="submit">Limpeza concluída</button>
+          </form>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+{% endblock %}

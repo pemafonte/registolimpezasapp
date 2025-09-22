@@ -1,0 +1,92 @@
+{% extends "base.html" %}
+{% block content %}
+  <h2>Detalhe do Registo #{{ registo.id }}</h2>
+  <table>
+    <tr><th>Matrícula</th><td>{{ registo.matricula }}</td></tr>
+    <tr><th>Nº de Frota</th><td>{{ registo.num_frota or "—" }}</td></tr>
+    <tr><th>Protocolo</th><td>{{ registo.protocolo }}</td></tr>
+    <tr><th>Operador</th><td>{{ registo.funcionario }}</td></tr>
+    <tr><th>Data/Hora</th><td>{{ registo.data_hora }}</td></tr>
+    <tr><th>Estado</th><td>{{ registo.estado }}</td></tr>
+    <tr><th>Local</th><td>{{ registo.local or "—" }}</td></tr>
+    <tr><th>Hora Início</th><td>{{ registo.hora_inicio or "—" }}</td></tr>
+    <tr><th>Hora Fim</th><td>{{ registo.hora_fim or "—" }}</td></tr>
+    <tr>
+      <th>Observações</th>
+      <td>
+        {% if can('dashboard:view') %}
+          <form method="post" enctype="multipart/form-data">
+            <textarea name="observacoes" rows="4" style="width:50%;">{{ registo.observacoes or "" }}</textarea>
+            <div style="margin-top:8px;">
+              <label>Anexar ficheiros: <input type="file" name="ficheiros" multiple></label>
+              <button class="btn btn-primary" type="submit">Guardar</button>
+            </div>
+          </form>
+        {% else %}
+          {{ registo.observacoes or "—" }}
+        {% endif %}
+      </td>
+    </tr>
+    <tr>
+      <th>Anexos</th>
+      <td>
+        {% if anexos %}
+          <ul>
+            {% for a in anexos %}
+              <li>
+                <a href="{{ url_for('download_anexo', anexo_id=a.id) }}" target="_blank">{{ a.caminho }}</a>
+                <span class="muted">({{ a.tipo }})</span>
+              </li>
+            {% endfor %}
+          </ul>
+        {% else %}
+          <span class="muted">Sem anexos.</span>
+        {% endif %}
+      </td>
+    </tr>
+    <tr><th>Limpeza Extra Autorizada</th><td>{{ "Sim" if registo.extra_autorizada else "Não" }}</td></tr>
+    <tr><th>Responsável Autorização</th><td>{{ registo.responsavel_autorizacao or "—" }}</td></tr>
+    <tr>
+      <th>Verificação de Limpeza</th>
+      <td>
+        {% if registo.verificacao_limpeza %}
+          {% if registo.verificacao_limpeza|lower == "conforme" %}
+            <span class="badge badge-success">Conforme</span>
+          {% elif registo.verificacao_limpeza|lower in ["não conforme", "nao conforme"] %}
+            <span class="badge badge-danger">Não conforme</span>
+          {% else %}
+            {{ registo.verificacao_limpeza }}
+          {% endif %}
+        {% else %}
+          <span class="muted">—</span>
+        {% endif %}
+        {% if can('dashboard:view') %}
+          <a class="btn btn-primary" href="{{ url_for('verificar_limpeza', registo_id=registo.id) }}">Verificar/Alterar</a>
+        {% endif %}
+      </td>
+    </tr>
+    <tr>
+      <th>Comentários</th>
+      <td>
+        {% if can('dashboard:view') %}
+          <form method="post" action="{{ url_for('registo_detalhe', rid=registo.id) }}">
+            <textarea name="comentarios_verificacao" rows="4" style="width:50%;">{{ registo.comentarios_verificacao or "" }}</textarea>
+            <button class="btn btn-primary" type="submit">Guardar Comentário</button>
+          </form>
+        {% else %}
+          {{ registo.comentarios_verificacao or "—" }}
+        {% endif %}
+      </td>
+    </tr>
+  </table>
+  <p>
+    <a class="btn" href="{{ url_for('registos') }}">Voltar aos registos</a>
+    {% if can('registos:delete') %}
+      <form method="post" action="{{ url_for('registo_apagar', rid=registo.id) }}"
+            onsubmit="return confirm('Apagar registo #{{ registo.id }}?');"
+            style="display:inline-block;margin-left:6px;">
+        <button class="btn btn-danger" type="submit">Eliminar</button>
+      </form>
+    {% endif %}
+  </p>
+{% endblock %}

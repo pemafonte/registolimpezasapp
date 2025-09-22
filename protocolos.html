@@ -1,0 +1,42 @@
+{% extends "base.html" %}
+{% block content %}
+  <h2>Protocolos</h2>
+  {% if can('protocolos:edit') %}
+    <p><a class="btn btn-primary" href="{{ url_for('protocolo_novo') }}">Novo Protocolo</a></p>
+  {% endif %}
+  <table>
+    <thead>
+      <tr>
+        <th>Nome</th>
+        <th>Passos</th>
+        <th>Frequência (dias)</th>
+        <th>Ativo</th>
+        {% if can('protocolos:edit') %}<th>Ações</th>{% endif %}
+      </tr>
+    </thead>
+    <tbody>
+      {% for p in protocolos %}
+      <tr>
+        <td>{{ p.nome }}</td>
+        <td>
+          {% set data = p.passos_json|loadjson %}
+          {% if data and data.passos %}
+            <ol>
+              {% for step in data.passos %}
+                <li>{{ step }}</li>
+              {% endfor %}
+            </ol>
+          {% else %}
+            <span class="muted">sem passos</span>
+          {% endif %}
+        </td>
+        <td>{{ p.frequencia_dias or "—" }}</td>
+        <td>{{ "Sim" if p.ativo==1 else "Não" }}</td>
+        {% if can('protocolos:edit') %}
+        <td><a class="btn" href="{{ url_for('protocolo_editar', pid=p.id) }}">Editar</a></td>
+        {% endif %}
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+{% endblock %}

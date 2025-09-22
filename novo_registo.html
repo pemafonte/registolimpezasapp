@@ -1,0 +1,181 @@
+{% extends "base.html" %}
+{% block content %}
+  <h2>Novo Registo</h2>
+
+  {% if mostrar_botao_autorizacao and viatura_id %}
+  <form method="post" action="{{ url_for('solicitar_autorizacao', viatura_id=viatura_id) }}">
+    <button class="btn btn-warning" type="submit">Solicitar autorização ao gestor</button>
+  </form>
+  {% endif %}
+
+  {% if viaturas_autorizadas %}
+  <div class="card" style="margin-bottom:1rem;">
+    <b>Viaturas autorizadas a limpeza extra hoje:</b>
+    <ul>
+  {% for v in viaturas if v.id in viaturas_autorizadas %}
+    <li>
+      {{ v.matricula }}
+      {% if v.num_frota %} — {{ v.num_frota }}{% endif %}
+      {% if v.descricao %} — {{ v.descricao }}{% endif %}
+      {% if v.filial %} — {{ v.filial }}{% endif %}
+      <form method="get" action="{{ url_for('novo_registo') }}" style="display:inline;">
+        <input type="hidden" name="viatura_id" value="{{ v.id }}">
+        <button class="btn btn-success btn-sm" type="submit">Selecionar</button>
+      </form>
+    </li>
+  {% endfor %}
+</ul>
+  </div>
+  {% endif %}
+
+  {% if pedidos_pendentes %}
+  <div class="card" style="margin-bottom:1rem;">
+    <b>Pedidos de limpeza extra pendentes:</b>
+    <table style="width:100%;border-collapse:collapse;">
+      <thead>
+        <tr>
+          <th>Matrícula</th>
+          <th>Nº Frota</th>
+          <th>Operador</th>
+          <th>Data Pedido</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for p in pedidos_pendentes %}
+          <tr>
+            <td>{{ p.matricula }}</td>
+            <td>{{ p.num_frota or "" }}</td>
+            <td>{{ p.operador }}</td>
+            <td>{{ p.data_pedido }}</td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% endif %}
+
+  <form method="post" enctype="multipart/form-data">
+    <div class="row">
+      <label>Pesquisar Nº de Frota
+        <input type="text" id="pesquisa_frota" placeholder="Digite o nº de frota">
+      </label>
+      <label>Matrícula
+        <select id="matricula_select" name="viatura_id" required>
+          <option value="">— selecione —</option>
+          {% for v in viaturas %}
+            <option value="{{ v.id }}" data-num_frota="{{ v.num_frota|default('') }}"
+              {% if request.args.get('viatura_id') and request.args.get('viatura_id')|int == v.id %}selected{% endif %}>
+              {{ v.matricula }}{% if v.num_frota %} — {{ v.num_frota }}{% endif %}{% if limpa_hoje_map[v.id] %} ★{% endif %}
+            </option>
+          {% endfor %}
+        </select>
+      </label>
+      <label>Nº Frota
+        <select id="num_frota_select">
+          <option value="">— selecione —</option>
+          {% for v in viaturas if v.num_frota %}
+            <option value="{{ v.id }}" data-matricula="{{ v.matricula }}">{{ v.num_frota }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label>Protocolo
+        <select name="protocolo_id" required>
+          <option value="">— selecione —</option>
+          {% for p in protocolos %}<option value="{{ p.id }}">{{ p.nome }}</option>{% endfor %}
+        </select>
+      </label>
+      <label>Estado
+        <select name="estado">
+          <option value="em_progresso">Em progresso</option>
+        </select>
+      </label>
+    </div>
+    <div class="row">
+      <label>Local <input name="local" placeholder="p.ex.: Parque A"></label>
+    </div>
+    <div class="row" style="grid-template-columns:1fr;">
+      <label>Observações
+        <textarea name="observacoes" rows="3"></textarea>
+      </label>
+    </div>
+    <div class="row">
+      <label>Ficheiros (opcional) <input type="file" name="ficheiros" multiple></label>
+    </div>
+    <p>
+      <button class="btn btn-primary" type="submit">Criar</button>
+      <a class="btn" href="{{ url_for('registos') }}">Cancelar</a>
+    </p>
+  </form>
+
+  <!-- Informação dos Protocolos -->
+  <div style="margin-top:2rem;">
+    <h3>Protocolos disponíveis</h3>
+    <ul style="list-style:none;padding:0;">
+      {% for p in protocolos %}
+        <li style="margin-bottom:1.5rem;">
+          <div style="font-weight:bold;">
+            {{ p.nome }}
+            {% if p.frequencia_dias %}
+              <span style="color:#888;font-weight:normal;">({{ p.frequencia_dias }} dias)</span>
+            {% endif %}
+          </div>
+          {% set passos = p.passos_json|loadjson %}
+          {% if passos.passos %}
+            <div style="margin-top:0.5em;">
+              <b>Passos:</b>
+              <ol style="margin:0 0 0 1.2em;">
+                {% for step in passos.passos %}
+                  <li>{{ step }}</li>
+                {% endfor %}
+              </ol>
+            </div>
+          {% else %}
+            <span class="muted">Sem passos definidos.</span>
+          {% endif %}
+        </li>
+      {% endfor %}
+    </ul>
+  </div>
+
+  <script>
+    // Sincronização matrícula <-> nº frota
+    const matriculaSel = document.getElementById('matricula_select');
+    const numFrotaSel = document.getElementById('num_frota_select');
+    const pesquisaFrota = document.getElementById('pesquisa_frota');
+
+    // Quando muda a matrícula, sincroniza nº frota
+    matriculaSel.addEventListener('change', function() {
+      const vid = this.value;
+      if (!vid) { numFrotaSel.value = ""; return; }
+      numFrotaSel.value = vid;
+    });
+    // Quando muda o nº frota, sincroniza matrícula
+    numFrotaSel.addEventListener('change', function() {
+      const vid = this.value;
+      if (!vid) { matriculaSel.value = ""; return; }
+      matriculaSel.value = vid;
+    });
+
+    // Pesquisa por nº de frota: ao escrever, filtra e seleciona automaticamente se só houver um resultado
+    pesquisaFrota.addEventListener('input', function() {
+      const val = this.value.trim().toLowerCase();
+      let found = null;
+      for (let opt of numFrotaSel.options) {
+        if (!opt.value) continue;
+        const frota = opt.textContent.trim().toLowerCase();
+        if (frota.includes(val) && val !== "") {
+          opt.style.display = "";
+          if (!found) found = opt;
+        } else {
+          opt.style.display = "none";
+        }
+      }
+      // Se só um resultado, seleciona automaticamente matrícula e nº frota
+      let visibles = Array.from(numFrotaSel.options).filter(o => o.style.display !== "none" && o.value);
+      if (visibles.length === 1) {
+        numFrotaSel.value = visibles[0].value;
+        matriculaSel.value = visibles[0].value;
+      }
+    });
+  </script>
+{% endblock %}

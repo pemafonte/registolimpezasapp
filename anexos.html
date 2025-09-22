@@ -1,0 +1,13 @@
+{% extends "base.html" %}
+{% block content %}
+  <h2>Anexos do registo #{{ registo_id }}</h2>
+  {% if anexos %}
+    <ul>
+      {% for a in anexos %}
+        <li><a href="{{ url_for('download_anexo', anexo_id=a.id) }}">{{ a.caminho }}</a> <span class="muted">({{ a.tipo }})</span></li>
+      {% endfor %}
+    </ul>
+  {% else %}
+    <div class="card">Sem anexos.</div>
+  {% endif %}
+{% endblock %}

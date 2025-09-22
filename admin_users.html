@@ -1,0 +1,37 @@
+{% extends "base.html" %}
+{% block content %}
+  <h2>Utilizadores</h2>
+  <p><a class="btn btn-primary" href="{{ url_for('admin_user_new') }}">Novo utilizador</a></p>
+  <table>
+    <thead>
+      <tr>
+        <th>Username</th>
+        <th>Nome</th>
+        <th>Perfil</th>
+        <th>regiao</th>
+        <th>Ativo</th>
+        <th>Criado</th>
+        <th>Ações</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for u in users %}
+      <tr>
+        <td>{{ u.username }}</td>
+        <td>{{ u.nome or "—" }}</td>
+        <td>{{ u.role }}</td>
+        <td>{{ u.regiao or "—" }}</td>
+        <td>{{ "Sim" if u.ativo==1 else "Não" }}</td>
+        <td>{{ u.criado_em }}</td>
+        <td>
+          <a class="btn" href="{{ url_for('admin_user_reset_password', user_id=u.id) }}">Redefinir password</a>
+          <a class="btn btn-sm" href="{{ url_for('admin_user_edit', user_id=u.id) }}">Editar</a>
+          <form method="post" action="{{ url_for('admin_user_toggle', user_id=u.id) }}" style="display:inline-block;margin-left:6px;">
+            <button class="btn" type="submit">{% if u.ativo==1 %}Desativar{% else %}Ativar{% endif %}</button>
+          </form>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+{% endblock %}

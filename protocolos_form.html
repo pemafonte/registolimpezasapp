@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+{% block content %}
+  <h2>{% if modo == 'novo' %}Novo Protocolo{% else %}Editar Protocolo{% endif %}</h2>
+  <form method="post">
+    <div class="row">
+      <label>Nome <input type="text" name="nome" value="{{ form.nome }}" required></label>
+      <label>Frequência (dias) <input type="number" name="frequencia_dias" min="0" step="1" value="{{ form.frequencia_dias }}"></label>
+      <label>Custo Limpeza (€)
+        <input type="number" name="custo_limpeza" min="0" step="0.01" value="{{ form.custo_limpeza or '' }}" required>
+      </label>
+      <label>Ativo
+        <select name="ativo">
+          <option value="1" {% if form.ativo == 1 %}selected{% endif %}>Sim</option>
+          <option value="0" {% if form.ativo != 1 %}selected{% endif %}>Não</option>
+        </select>
+      </label>
+    </div>
+    <div class="row" style="grid-template-columns: 1fr;">
+      <label>Passos (um por linha)
+        <textarea name="passos" rows="10" placeholder="Inspeção interior
+Aspirar
+Desinfetar superfícies">{{ form.passos }}</textarea>
+      </label>
+    </div>
+    <p>
+      <button class="btn btn-primary" type="submit">{% if modo == 'novo' %}Criar{% else %}Guardar{% endif %}</button>
+      <a class="btn" href="{{ url_for('protocolos') }}">Cancelar</a>
+    </p>
+  </form>
+{% endblock %}

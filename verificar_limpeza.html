@@ -1,0 +1,17 @@
+{% extends "base.html" %}
+{% block content %}
+  <h2>Verificar Limpeza - Registo #{{ registo.id }}</h2>
+  <form method="post">
+    <label>Verificação:
+      <select name="verificacao_limpeza" required>
+        <option value="">— selecione —</option>
+        <option value="conforme" {% if registo.verificacao_limpeza == "conforme" %}selected{% endif %}>Conforme</option>
+        <option value="não conforme" {% if registo.verificacao_limpeza == "não conforme" %}selected{% endif %}>Não conforme</option>
+      </select>
+    </label>
+    <p>
+      <button class="btn btn-primary" type="submit">Registar Verificação</button>
+      <a class="btn" href="{{ url_for('registos') }}">Cancelar</a>
+    </p>
+  </form>
+{% endblock %}

@@ -1,0 +1,20 @@
+services:
+  - type: web
+    name: registo-limpezas
+    env: python
+    buildCommand: "pip install -r requirements_render.txt"
+    startCommand: "gunicorn --bind 0.0.0.0:$PORT app:app"
+    plan: free
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.0
+      - key: APP_SECRET_KEY
+        generateValue: true
+      - key: FLASK_ENV
+        value: production
+    
+  - type: pgsql
+    name: registo-limpezas-db
+    databaseName: registo_limpezas
+    user: registo_user
+    plan: free

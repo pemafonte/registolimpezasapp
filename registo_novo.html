@@ -1,0 +1,32 @@
+{% extends "base.html" %}
+{% block content %}
+<h2>Novo registo de limpeza</h2>
+<form method="post" class="card" style="max-width:640px; display:grid; gap:10px">
+  <label>Viatura
+    <select name="viatura_id" required>
+      <option value="">—</option>
+      {% for v in viaturas %}
+        <option value="{{ v.id }}" {% if viatura_id and viatura_id==v.id %}selected{% endif %}>{{ v.matricula }}</option>
+      {% endfor %}
+    </select>
+  </label>
+
+  <label>Protocolo
+    <select name="protocolo_id" required>
+      <option value="">—</option>
+      {% for p in protocolos %}
+        <option value="{{ p.id }}">{{ p.nome }}</option>
+      {% endfor %}
+    </select>
+  </label>
+
+  <label>Local <input name="local" placeholder="ex.: Parque Central"></label>
+  <label>Hora início <input name="hora_inicio" placeholder="HH:MM"></label>
+  <label>Hora fim <input name="hora_fim" placeholder="HH:MM"></label>
+
+  <div style="margin-top:6px">
+    <button class="btn">Guardar</button>
+    <a class="btn" href="{{ url_for('viaturas') }}">Cancelar</a>
+  </div>
+</form>
+{% endblock %}

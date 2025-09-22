@@ -1,0 +1,9 @@
+{% extends "base.html" %}
+{% block content %}
+  <h2>Acesso negado</h2>
+  <p>Não tem permissões para aceder a esta página.</p>
+  <p>
+    <a class="btn" href="{{ url_for('home') }}">Ir para o início</a>
+    {% if can('registos:view') %}<a class="btn" href="{{ url_for('registos') }}">Ver registos</a>{% endif %}
+  </p>
+{% endblock %}

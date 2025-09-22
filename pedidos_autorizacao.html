@@ -1,0 +1,31 @@
+{% extends "base.html" %}
+{% block content %}
+  <h2>Pedidos de autorização de limpeza extra</h2>
+  <table>
+    <thead>
+      <tr>
+        <th>Matrícula</th>
+        <th>Nº Frota</th>
+        <th>Operador</th>
+        <th>Validar</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for p in pedidos %}
+        <tr>
+          <td>{{ p.matricula }}</td>
+          <td>{{ p.num_frota or "" }}</td>
+          <td>{{ p.operador }}</td>
+          <td>
+            <form method="post" action="{{ url_for('validar_pedido_autorizacao', pedido_id=p.id) }}">
+              <button class="btn btn-success" type="submit">Validar</button>
+            </form>
+          </td>
+        </tr>
+      {% endfor %}
+      {% if pedidos|length == 0 %}
+        <tr><td colspan="3" class="muted">Nenhum pedido pendente.</td></tr>
+      {% endif %}
+    </tbody>
+  </table>
+{% endblock %}

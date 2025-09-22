@@ -1,0 +1,18 @@
+{% extends "base.html" %}
+{% block content %}
+  <h2>Importar Viaturas (CSV ou Excel)</h2>
+
+  <p>
+    <a class="btn btn-primary" href="{{ url_for('exportar_viaturas_excel') }}">Exportar viaturas para Excel</a>
+  </p>
+  <p class="muted">
+    Pode exportar a lista de viaturas existentes, editar no Excel/LibreOffice, e reimportar para atualizar ou adicionar viaturas.
+  </p>
+
+  <form method="post" enctype="multipart/form-data">
+    <label>Ficheiro CSV ou Excel
+      <input type="file" name="ficheiro" accept=".csv,.xlsx" required>
+    </label>
+    <button class="btn btn-primary" type="submit">Importar</button>
+  </form>
+{% endblock %}

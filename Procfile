@@ -1,0 +1,1 @@
+web: waitress-serve --port $PORT AppFlaskLimpeza_final_clean3_LOGIN_RBAC:app

@@ -1,0 +1,29 @@
+{% extends "base.html" %}
+{% block content %}
+<h2>Utilizadores</h2>
+
+<table class="table table-striped">
+  <thead>
+    <tr>
+      <th>Nome</th>
+      <th>Email</th>
+      <th>Perfil</th>
+      <th style="width:120px;">Ações</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for u in users %}
+    <tr>
+      <td>{{ u['nome'] }}</td>
+      <td>{{ u['email'] }}</td>
+      <td>{{ u['perfil'] or '—' }}</td>
+      <td>
+        <form action="{{ url_for('admin_utilizadores_delete', user_id=u['id']) }}" method="POST" onsubmit='return confirm("Eliminar {{ u[\"nome\"] }}? Esta ação é definitiva.");'
+            <button class="btn btn-sm btn-danger" type="submit">Apagar</button>
+        </form>
+      </td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% endblock %}

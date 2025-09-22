@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html lang="pt">
+<head>
+    <meta charset="UTF-8">
+    <title>Dashboard - Viaturas</title>
+    <style>
+        body { font-family: Arial; background-color: #f5f5f5; padding: 20px; }
+        table { width: 100%; border-collapse: collapse; margin-top: 20px; background: white; }
+        th, td { padding: 10px; border: 1px solid #ddd; text-align: center; }
+        .vermelho { background-color: #f8d7da; }
+        .amarelo { background-color: #fff3cd; }
+        .verde { background-color: #d4edda; }
+        h2 { margin-top: 0; }
+        .top-bar { display: flex; justify-content: space-between; align-items: center; }
+        a { text-decoration: none; padding: 8px 12px; background: #007bff; color: white; border-radius: 5px; }
+    </style>
+</head>
+<body>
+    <div class="top-bar">
+        <h2>Estado das Viaturas</h2>
+        <div>
+            <a href="{{ url_for('registar') }}">Registar Limpeza</a>
+            <a href="{{ url_for('exportar') }}">Exportar Excel</a>
+            <a href="{{ url_for('logout') }}">Logout</a>
+        </div>
+    </div>
+
+    <table>
+        <tr>
+            <th>Matrícula</th>
+            <th>Serviço</th>
+            <th>Última Limpeza</th>
+            <th>Estado</th>
+        </tr>
+        {% for v in estados %}
+        <tr class="{{ v.cor }}">
+            <td>{{ v.matricula }}</td>
+            <td>{{ v.servico }}</td>
+            <td>{{ v.ultima_limpeza }}</td>
+            <td>{{ v.estado }}</td>
+        </tr>
+        {% endfor %}
+    </table>
+</body>
+</html>

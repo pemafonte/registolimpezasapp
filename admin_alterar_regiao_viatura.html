@@ -1,0 +1,18 @@
+{% extends "base.html" %}
+{% block content %}
+  <h2>Alterar Região de Viatura</h2>
+  <form method="post" style="display:flex;gap:1rem;align-items:end;">
+    <label>Viatura:
+      <select name="viatura_id" required>
+        <option value="">— selecione —</option>
+        {% for v in viaturas %}
+          <option value="{{ v.id }}">{{ v.matricula }} (Atual: {{ v.regiao or "—" }})</option>
+        {% endfor %}
+      </select>
+    </label>
+    <label>Nova Região:
+      <input type="text" name="nova_regiao" required>
+    </label>
+    <button class="btn btn-primary" type="submit">Alterar Região</button>
+  </form>
+{% endblock %}

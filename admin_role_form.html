@@ -1,0 +1,21 @@
+{% extends "base.html" %}
+{% block content %}
+  <h2>Novo Perfil</h2>
+  <form method="post">
+    <div class="row">
+      <label>Nome do perfil (minúsculas) <input name="name" required></label>
+    </div>
+    <div class="row" style="grid-template-columns: 1fr;">
+      <fieldset class="card">
+        <legend>Permissões</legend>
+        {% for p in perms %}
+          <label style="display:block;margin:.25rem 0;">
+            <input type="checkbox" name="perms" value="{{ p }}"> {{ p }}
+          </label>
+        {% endfor %}
+      </fieldset>
+    </div>
+    <p><button class="btn btn-primary" type="submit">Criar</button>
+       <a class="btn" href="{{ url_for('admin_roles') }}">Cancelar</a></p>
+  </form>
+{% endblock %}

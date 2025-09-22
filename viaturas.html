@@ -1,0 +1,140 @@
+{% extends "base.html" %}
+{% block content %}
+<h2>Viaturas</h2>
+
+{% if can('viaturas:import') %}
+<!-- Formulário para inserir nova viatura -->
+<form method="post" style="margin-bottom:0.5rem;display:flex;flex-wrap:wrap;gap:.5rem;align-items:end;">
+  <input type="text" name="matricula" placeholder="Matrícula" required style="width:110px;">
+  <input type="text" name="num_frota" placeholder="Nº Frota" style="width:90px;">
+  <input type="text" name="regiao" placeholder="Região" style="width:100px;">
+  <input type="text" name="operacao" placeholder="Operação" style="width:100px;">
+  <input type="text" name="marca" placeholder="Marca" style="width:100px;">
+  <input type="text" name="modelo" placeholder="Modelo" style="width:100px;">
+  <input type="text" name="filial" placeholder="Filial" style="width:90px;">
+  <button class="btn btn-primary" type="submit">Inserir Viatura</button>
+</form>
+{% endif %}
+
+<table>
+  <thead>
+    <tr>
+      <th>Matrícula</th>
+      <th>Nº de frota</th>
+      <th>Região</th>
+      <th>Operação</th>
+      <th>Marca</th>
+      <th>Modelo</th>
+      <th>Ativo</th>
+      <th>Filial</th>
+      <th>Protocolo B<br>(dias sem realizar)</th>
+      <th>Protocolo C<br>(dias sem realizar)</th>
+      {% if can('viaturas:import') %}
+        <th>Ações</th>
+      {% endif %}
+    </tr>
+    <!-- Linha de filtros: form só nesta linha -->
+    <tr>
+      <form method="get">
+        <td><input type="text" name="matricula" placeholder="Matrícula" value="{{ request.args.get('matricula','') }}" style="width:90px;"></td>
+        <td><input type="text" name="num_frota" placeholder="Nº de frota" value="{{ request.args.get('num_frota','') }}" style="width:70px;"></td>
+        <td>
+          <select name="regiao" style="width:90px;">
+            <option value="">Todas</option>
+            {% for v in filtros.regiao %}<option value="{{v}}" {% if request.args.get('regiao')==v %}selected{% endif %}>{{v}}</option>{% endfor %}
+          </select>
+        </td>
+        <td>
+          <select name="operacao" style="width:90px;">
+            <option value="">Todas</option>
+            {% for v in filtros.operacao %}<option value="{{v}}" {% if request.args.get('operacao')==v %}selected{% endif %}>{{v}}</option>{% endfor %}
+          </select>
+        </td>
+        <td>
+          <select name="marca" style="width:90px;">
+            <option value="">Todas</option>
+            {% for v in filtros.marca %}<option value="{{v}}" {% if request.args.get('marca')==v %}selected{% endif %}>{{v}}</option>{% endfor %}
+          </select>
+        </td>
+        <td>
+          <select name="modelo" style="width:90px;">
+            <option value="">Todos</option>
+            {% for v in filtros.modelo %}<option value="{{v}}" {% if request.args.get('modelo')==v %}selected{% endif %}>{{v}}</option>{% endfor %}
+          </select>
+        </td>
+        <td>
+          <select name="ativo" style="width:60px;">
+            <option value="">Todos</option>
+            <option value="1" {% if request.args.get('ativo')=='1' %}selected{% endif %}>Sim</option>
+            <option value="0" {% if request.args.get('ativo')=='0' %}selected{% endif %}>Não</option>
+          </select>
+        </td>
+        <td>
+          <select name="filial" style="width:70px;">
+            <option value="">Todas</option>
+            {% for v in filtros.filial %}
+              <option value="{{v}}" {% if request.args.get('filial')==v %}selected{% endif %}>{{v}}</option>
+            {% endfor %}
+          </select>
+        </td>
+        <td colspan="2"></td>
+        {% if can('viaturas:import') %}
+          <td></td>
+        {% endif %}
+        <td colspan="11" style="text-align:right;">
+          <button class="btn" type="submit">Filtrar</button>
+          <a class="btn" href="{{ url_for('viaturas') }}">Limpar</a>
+          <a class="btn" href="{{ url_for('exportar_viaturas_csv') }}?{{ request.query_string.decode() }}">Exportar Excel</a>
+        </td>
+      </form>
+    </tr>
+  </thead>
+  <tbody>
+    {% for v in viaturas %}
+    <tr {% if v.limpa_hoje and v.limpeza_repetida %}style="background-color:#ffcccc;"{% endif %}>
+      <td><b>{{ v.matricula }}</b></td>
+      <td>{{ v.num_frota or "" }}</td>
+      <td>{{ v.regiao or "" }}</td>
+      <td>{{ v.operacao or "" }}</td>
+      <td>{{ v.marca or "" }}</td>
+      <td>{{ v.modelo or "" }}</td>
+      <td>{{ "Sim" if v.ativo else "Não" }}</td>
+      <td>{{ v.filial or "" }}</td>
+      <td>
+        {% set dias_b = v.dias_protocolo_b %}
+        {% set freq_b = v.freq_protocolo_b %}
+        {% if dias_b is not none %}
+          {{ dias_b }}{% if freq_b %}/{{ freq_b }} dias{% endif %}
+          {% if freq_b and dias_b > freq_b %}
+            <span style="color:red;">(Atrasado)</span>
+          {% endif %}
+        {% else %}
+          —
+        {% endif %}
+      </td>
+      <td>
+        {% set dias_c = v.dias_protocolo_c %}
+        {% set freq_c = v.freq_protocolo_c %}
+        {% if dias_c is not none %}
+          {{ dias_c }}{% if freq_c %}/{{ freq_c }} dias{% endif %}
+          {% if freq_c and dias_c > freq_c %}
+            <span style="color:red;">(Atrasado)</span>
+          {% endif %}
+        {% else %}
+          —
+       {% endif %}
+      </td>
+      {% if can('viaturas:import') %}
+      <td>
+        <form method="post" action="{{ url_for('ativar_desativar_viatura', viatura_id=v.id) }}" style="display:inline;" onsubmit="return confirm('Deseja {% if v.ativo %}desativar{% else %}ativar{% endif %} a viatura {{ v.matricula }}?');">
+          <button class="btn btn-danger btn-sm" type="submit">
+            {% if v.ativo %}Desativar{% else %}Ativar{% endif %}
+          </button>
+        </form>
+      </td>
+      {% endif %}
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% endblock %}

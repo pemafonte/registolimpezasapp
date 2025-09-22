@@ -1,0 +1,61 @@
+{% extends "base.html" %}
+{% block content %}
+  <h2>Importar viaturas via CSV ou Excel</h2>
+  <p class="muted">
+    Formato sugerido: <code>num_frota,matricula,descricao,filial</code> (delimitador vírgula ou ponto-e-vírgula). A <b>matrícula</b> é obrigatória.<br>
+    Também pode importar ficheiros <b>Excel (.xlsx)</b> com as mesmas colunas.
+  </p>
+
+  <form method="post" enctype="multipart/form-data">
+    <label>Ficheiro CSV ou Excel
+      <input type="file" name="ficheiro" accept=".csv,.xlsx,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" required>
+    </label>
+
+    {% if headers %}
+      <p><b>Headers detetados:</b> {{ headers|join(", ") }}</p>
+    {% endif %}
+
+    {% if preview %}
+      <div class="card">
+        <b>Pré-visualização (primeiras {{ preview|length }} linhas):</b>
+        <div style="max-height:260px; overflow:auto;">
+          <table>
+            <thead>
+              <tr>
+                {% for k in preview[0].keys() %}
+                  <th>{{ k }}</th>
+                {% endfor %}
+              </tr>
+            </thead>
+            <tbody>
+              {% for r in preview %}
+                <tr>
+                  {% for v in r.values() %}
+                    <td>{{ v }}</td>
+                  {% endfor %}
+                </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="card">
+        <b>Mapeamento de colunas detetado:</b>
+        <ul>
+          <li>num_frota → <code>{{ mapping.num_frota or "—" }}</code></li>
+          <li>matricula (obrig.) → <code>{{ mapping.matricula or "—" }}</code></li>
+          <li>descricao → <code>{{ mapping.descricao or "—" }}</code></li>
+          <li>filial → <code>{{ mapping.filial or "—" }}</code></li>
+        </ul>
+        <p class="muted">Se algum campo vier como “—”, ajusta o header no ficheiro e volta a carregar.</p>
+      </div>
+    {% endif %}
+
+    <p style="display:flex; gap:.5rem; flex-wrap:wrap;">
+      <button class="btn" name="action" value="preview">Pré-visualizar</button>
+      <button class="btn btn-primary" name="action" value="confirm">Confirmar e gravar</button>
+      <a class="btn" href="{{ url_for('modelo_csv_viaturas') if 'modelo_csv_viaturas' in current_app.view_functions else '#' }}">Descarregar modelo CSV</a>
+    </p>
+  </form>
+{% endblock %}

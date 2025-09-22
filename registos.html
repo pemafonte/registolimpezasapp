@@ -1,0 +1,97 @@
+{% extends "base.html" %}
+{% block content %}
+<form method="get" action="{{ url_for('registos') }}">
+  <label>Filtrar por mês:
+    <input type="month" name="mes" value="{{ mes or '' }}">
+  </label>
+  <button class="btn" type="submit">Filtrar</button>
+  {% if mes %}
+    <a class="btn" href="{{ url_for('registos') }}">Limpar filtro</a>
+  {% endif %}
+</form>
+{% if mes %}
+  <a class="btn btn-primary" href="{{ url_for('export_registos_excel', mes=mes) }}">Exportar Excel (mês)</a>
+{% else %}
+  <a class="btn btn-primary" href="{{ url_for('export_registos_excel') }}">Exportar Excel (todos)</a>
+{% endif %}
+
+{% if session['role'] == 'operador' %}
+<p>
+  <a class="btn btn-primary" href="{{ url_for('novo_registo') }}">Novo Registo</a>
+  <a class="btn btn-info" href="{{ url_for('registos_em_progresso') }}">Limpezas em Progresso</a>
+</p>
+{% endif %}
+
+<h2>Registos</h2>
+<table>
+  <thead>
+    <tr>
+      <th style="white-space:nowrap;">ID Região</th>
+      <th>Data</th>
+      <th>Hora início</th>
+      <th>Hora fim</th>
+      <th>Matrícula</th>
+      <th>Nº frota</th>
+      <th>Protocolo</th>
+      <th>Funcionário</th>
+      <th>Local</th>
+      <th>Obs</th>
+      <th>Extra</th>
+      <th>Anexos</th>
+      <th>Verificação</th>
+      <th>Ações</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% set region_counters = {} %}
+    {% for r in registos %}
+      {% set regiao = r.regiao or '—' %}
+      {% if regiao not in region_counters %}
+        {% set _ = region_counters.update({regiao: 1}) %}
+      {% else %}
+        {% set _ = region_counters.update({regiao: region_counters[regiao] + 1}) %}
+      {% endif %}
+      <tr>
+        <td style="white-space:nowrap;">{{ r.id_regiao }}</td>
+        <td>{{ r.data_hora[:10] }}</td>
+        <td>{{ r.hora_inicio or "—" }}</td>
+        <td>{{ r.hora_fim or "—" }}</td>
+        <td>{{ r.matricula }}</td>
+        <td>{{ r.num_frota or "—" }}</td>
+        <td>{{ r.protocolo }}</td>
+        <td>{{ r.funcionario or r.user }}</td>
+        <td>{{ r.local or "—" }}</td>
+        <td>{{ r.observacoes or "" }}</td>
+        <td>
+          {% if r.extra_autorizada == 1 or r.extra_autorizada == "1" %}
+            <span class="badge badge-warning">Extra</span>
+          {% else %}
+            Normal
+          {% endif %}
+        </td>
+        <td><a class="btn" href="{{ url_for('ver_anexos', registo_id=r.registo_id) }}">Ver</a></td>
+        <td>
+          {% if r.verificacao_limpeza %}
+            <span class="badge badge-success">Verificada</span>
+          {% else %}
+            <span class="muted">—</span>
+          {% endif %}
+        </td>
+        <td>
+          <a class="btn" href="{{ url_for('registo_detalhe', rid=r.registo_id) }}">Ver</a>
+          {% if can('dashboard:view') %}
+            <a class="btn btn-success" href="{{ url_for('verificar_limpeza', registo_id=r.registo_id) }}">Verificar</a>
+          {% endif %}
+          {% if can('registos:delete') %}
+            <form method="post" action="{{ url_for('registo_apagar', rid=r.registo_id) }}"
+                  onsubmit="return confirm('Apagar registo #{{ r.registo_id }}?');"
+                  style="display:inline-block;margin-left:6px;">
+              <button class="btn btn-danger" type="submit">Apagar</button>
+            </form>
+          {% endif %}
+        </td>
+      </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% endblock %}

@@ -1,0 +1,257 @@
+{% extends "base.html" %}
+{% block content %}
+<div id="protoModal" style="display:none;position:fixed;top:0;left:0;width:100vw;height:100vh;background:rgba(0,0,0,.3);z-index:999;">
+  <div style="background:#fff;padding:24px;max-width:600px;margin:60px auto;border-radius:8px;box-shadow:0 2px 12px #0002;">
+    <h3>Viaturas limpas por protocolo</h3>
+    <div id="protoModalContent"></div>
+    <button class="btn" onclick="document.getElementById('protoModal').style.display='none'">Fechar</button>
+  </div>
+</div>
+  <h2>Dashboard</h2>
+
+{% set CH = charts %}
+<!-- KPI Cards -->
+<div class="kpis" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;margin:.5rem 0 1rem;">
+  <div class="card" style="padding:10px;border:1px solid #e5e7eb;border-radius:8px;background:#fff;">
+    <div class="muted" style="font-size:.85rem;color:#6b7280;">Registos hoje</div>
+    <div style="font-size:1.6rem;font-weight:700;">{{ CH.kpi_today }}</div>
+  </div>
+  <div class="card" style="padding:10px;border:1px solid #e5e7eb;border-radius:8px;background:#fff;">
+    <div class="muted" style="font-size:.85rem;color:#6b7280;">Registos últimos 7 dias</div>
+    <div style="font-size:1.6rem;font-weight:700;">{{ CH.kpi_week }}</div>
+  </div>
+  <div class="card" style="padding:10px;border:1px solid #e5e7eb;border-radius:8px;background:#fff;">
+    <div class="muted" style="font-size:.85rem;color:#6b7280;">Registos este mês</div>
+    <div style="font-size:1.6rem;font-weight:700;">{{ CH.kpi_month }}</div>
+  </div>
+  <div class="card" style="padding:10px;border:1px solid #e5e7eb;border-radius:8px;background:#fff;">
+    <div class="muted" style="font-size:.85rem;color:#6b7280;">Viaturas limpas hoje</div>
+    <div style="font-size:1.6rem;font-weight:700;">{{ CH.kpi_today_veh }}</div>
+  </div>
+  <div class="card" style="padding:10px;border:1px solid #e5e7eb;border-radius:8px;background:#fff;">
+    <div class="muted" style="font-size:.85rem;color:#6b7280;">Total de limpezas hoje</div>
+    <div style="font-size:1.6rem;font-weight:700;">{{ CH.kpi_total_limpezas }}</div>
+  </div>
+</div>
+<!-- ...restante conteúdo do dashboard... -->
+
+{% if session['role'] in ['admin' , 'gestor'] %}
+  <h3>Pedidos de autorização de limpeza extra pendentes</h3>
+  <table style="width:100%;border-collapse:collapse;margin-bottom:2rem;">
+    <thead>
+      <tr>
+        <th>Matrícula</th>
+        <th>Nº de Frota</th>
+        <th>Operador</th>
+        <th>Validar</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for p in pedidos_pendentes %}
+        <tr>
+          <td>{{ p.matricula }}</td>
+          <td>{{ p.num_frota }}</td>
+          <td>{{ p.operador }}</td>
+          <td>
+            <form method="post" action="{{ url_for('validar_pedido_autorizacao', pedido_id=p.id) }}">
+              <button class="btn btn-success" type="submit">Validar</button>
+            </form>
+          </td>
+        </tr>
+      {% endfor %}
+      {% if pedidos_pendentes|length == 0 %}
+        <tr><td colspan="4" class="muted">Nenhum pedido pendente.</td></tr>
+      {% endif %}
+    </tbody>
+  </table>
+{% endif %}
+
+<h3>Viaturas a solicitar 2ª limpeza hoje</h3>
+<table style="width:100%;border-collapse:collapse;margin-bottom:2rem;">
+  <thead>
+    <tr>
+      <th>Matrícula</th>
+      <th>Nº de Frota</th>
+      <th>Descrição</th>
+      <th>Filial</th>
+      <th>Validar</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for v in viaturas if v.limpeza_repetida %}
+      <tr>
+        <td>{{ v.matricula }}</td>
+        <td>{{ v.num_frota or "" }}</td>
+        <td>{{ v.descricao or "" }}</td>
+        <td>{{ v.filial or "" }}</td>
+        <td>
+          {% if v.limpeza_validada %}
+            <span class="badge badge-success">Validada</span>
+          {% else %}
+            <form method="post" action="{{ url_for('validar_limpeza', viatura_id=v.id) }}">
+              <button class="btn btn-success" type="submit">Validar</button>
+            </form>
+          {% endif %}
+        </td>
+      </tr>
+    {% endfor %}
+  </tbody>
+</table>
+
+<div class="grid" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:32px;">
+  <div class="card" style="cursor:pointer;min-width:0;" onclick="showProtoModal()">
+    <h3 style="margin:0 0 .5rem">Viaturas distintas por protocolo</h3>
+    <div style="position:relative;width:100%;height:260px;">
+      <canvas id="chart_proto" style="width:100%;height:100%;"></canvas>
+    </div>
+    <ul class="muted" style="display:flex;flex-wrap:wrap;gap:.75rem;margin:.5rem 0 0;padding:0;list-style:none">
+      {% for i in range(CH.proto_labels|length) %}
+        <li>{{ CH.proto_labels[i] }}: <b>{{ CH.proto_values[i] }}</b></li>
+      {% endfor %}
+    </ul>
+    <div style="text-align:right;margin-top:.5rem;">
+      <button class="btn btn-primary" type="button" onclick="showProtoModal();event.stopPropagation();">Ver lista</button>
+    </div>
+  </div>
+
+  <div class="card" style="min-width:0;">
+    <div style="display:flex;align-items:center;gap:1rem;"></div>
+    <h3 style="margin:0 0 .5rem">Média de dias desde última limpeza</h3>
+    <div style="position:relative;width:100%;height:260px;">
+      <canvas id="chart_avg_days" style="width:100%;height:100%;"></canvas>
+    </div>
+    <div class="muted">Frota: <b>{{ CH.fleet_size }}</b> — Média: <b>{{ CH.avg_days }}</b> dias</div>
+  </div>
+
+  <div class="card" style="min-width:0;">
+    <div style="display:flex;align-items:center;gap:1rem;">
+      <h3 style="margin:0 0 .5rem 0;">Limpezas por local</h3>
+      <form method="get" style="margin:0;display:inline;">
+        <input type="month" name="mes" value="{{ mes or '' }}" style="padding:2px 6px;">
+        <button class="btn" type="submit" style="padding:2px 10px;font-size:.95em;">Filtrar</button>
+      </form>
+    </div>
+    <div style="position:relative;width:100%;height:260px;">
+      <canvas id="chart_local" style="width:100%;height:100%;"></canvas>
+    </div>
+    <ul class="muted" style="display:flex;flex-wrap:wrap;gap:.75rem;margin:.5rem 0 0;padding:0;list-style:none">
+      {% for i in range(CH.local_labels|length) %}
+        <li>{{ CH.local_labels[i] }}: <b>{{ CH.local_values[i] }}</b></li>
+      {% endfor %}
+    </ul>
+    {% if mes %}
+      <div class="muted" style="margin-top:.5rem;">Filtro aplicado: <b>{{ mes }}</b></div>
+    {% endif %}
+  </div>
+
+  <div class="card" style="min-width:0;">
+    <h3 style="margin:0 0 .5rem">Limpezas por funcionário</h3>
+    <div style="position:relative;width:100%;height:260px;">
+      <canvas id="chart_func" style="width:100%;height:100%;"></canvas>
+    </div>
+    <ul class="muted" style="display:flex;flex-wrap:wrap;gap:.75rem;margin:.5rem 0 0;padding:0;list-style:none">
+      {% for i in range(CH.func_labels|length) %}
+        <li>{{ CH.func_labels[i] }}: <b>{{ CH.func_values[i] }}</b></li>
+      {% endfor %}
+    </ul>
+  </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<script>
+  const CH = {{ charts | tojson }};
+  const viaturas = {{ viaturas | tojson }};
+  const protocolos = {{ protocolos | tojson }};
+
+  function bar(id, labels, data, title){
+    const ctx = document.getElementById(id).getContext('2d');
+    const valueLabel = {
+      id: 'valueLabel',
+      afterDatasetsDraw(chart, args, pluginOptions) {
+        const {ctx, chartArea: {top}, scales: {x, y}} = chart;
+        ctx.save();
+        ctx.font = '12px system-ui, sans-serif';
+        ctx.textAlign = 'center';
+        ctx.fillStyle = '#111';
+        chart.data.datasets.forEach((dataset, i) => {
+          const meta = chart.getDatasetMeta(i);
+          meta.data.forEach((bar, index) => {
+            const val = dataset.data[index];
+            if (val == null) return;
+            const posY = Math.min(bar.y, y.getPixelForValue(val)) - 4;
+            ctx.fillText(String(val), bar.x, posY);
+          });
+        });
+        ctx.restore();
+      }
+    };
+    new Chart(ctx, {
+      type: 'bar',
+      data: { labels: labels, datasets: [{ label: title, data: data }] },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: { legend: { display: false } },
+        scales: { y: { beginAtZero: true, ticks: { precision: 0 } } }
+      },
+      plugins: [valueLabel]
+    });
+  }
+
+  bar('chart_proto', CH.proto_labels, CH.proto_values, '');
+  (function(){
+    const ctx = document.getElementById('chart_avg_days').getContext('2d');
+    const valueLabel = {
+      id: 'valueLabel',
+      afterDatasetsDraw(chart, args, pluginOptions) {
+        const {ctx, chartArea: {top}, scales: {x, y}} = chart;
+        ctx.save();
+        ctx.font = '12px system-ui, sans-serif';
+        ctx.textAlign = 'center';
+        ctx.fillStyle = '#111';
+        chart.data.datasets.forEach((dataset, i) => {
+          const meta = chart.getDatasetMeta(i);
+          meta.data.forEach((bar, index) => {
+            const val = dataset.data[index];
+            if (val == null) return;
+            const posY = Math.min(bar.y, y.getPixelForValue(val)) - 4;
+            ctx.fillText(String(val), bar.x, posY);
+          });
+        });
+        ctx.restore();
+      }
+    };
+    new Chart(ctx, {
+      type: 'bar',
+      data: { labels: ['Média'], datasets: [{ label: 'Dias', data: [CH.avg_days] }] },
+      options: { 
+        responsive: true, 
+        maintainAspectRatio: false,
+        plugins: { legend: { display: false } }, 
+        scales: { y: { beginAtZero: true, ticks: { precision: 0 } } } 
+      },
+      plugins: [valueLabel]
+    });
+  })();
+  bar('chart_local', CH.local_labels, CH.local_values, '');
+  bar('chart_func', CH.func_labels, CH.func_values, '');
+
+  function showProtoModal() {
+    const data = {{ viaturas_por_protocolo | tojson }};
+    let html = "";
+    Object.values(data).forEach(p => {
+      html += `<h4>${p.nome}</h4><ul>`;
+      if (p.viaturas.length === 0) {
+        html += "<li><em>Nenhuma viatura limpa</em></li>";
+      } else {
+        p.viaturas.forEach(v => {
+          html += `<li>${v.matricula}${v.num_frota ? " — " + v.num_frota : ""}${v.descricao ? " — " + v.descricao : ""}</li>`;
+        });
+      }
+      html += "</ul>";
+    });
+    document.getElementById("protoModalContent").innerHTML = html;
+    document.getElementById("protoModal").style.display = "block";
+  }
+</script>
+{% endblock %}

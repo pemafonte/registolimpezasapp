@@ -1,0 +1,15 @@
+{% extends "base.html" %}
+{% block content %}
+  <h2>Perfis (roles)</h2>
+  <p><a class="btn btn-primary" href="{{ url_for('admin_role_new') }}">Novo perfil</a></p>
+
+  <h3>Perfis base</h3>
+  <ul>{% for r in base_roles %}<li>{{ r }} <span class="muted">(predefinido)</span></li>{% endfor %}</ul>
+
+  <h3>Perfis em BD</h3>
+  {% if db_roles %}
+    <ul>{% for r in db_roles %}<li>{{ r }}</li>{% endfor %}</ul>
+  {% else %}
+    <div class="card">Ainda não existem perfis personalizados.</div>
+  {% endif %}
+{% endblock %}

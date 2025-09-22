@@ -1,0 +1,68 @@
+{% extends "base.html" %}
+{% block content %}
+  <h2>{% if user %}Editar Utilizador{% else %}Novo Utilizador{% endif %}</h2>
+  <form method="post">
+    <div class="row">
+      <label>Username
+        <input name="username" required value="{{ user.username if user else '' }}">
+      </label>
+      <label>Nome
+        <input name="nome" placeholder="opcional" value="{{ user.nome if user else '' }}">
+      </label>
+      <label>Região
+        <input name="regiao" placeholder="ex.: Região Norte" value="{{ user.regiao if user else '' }}">
+      </label>
+      {% if not user %}
+      <label>Password
+        <input name="password" type="password" required>
+      </label>
+      {% endif %}
+      <label>Perfil
+        <select name="role" required id="role-select" onchange="toggleEmpresaField()">
+          {% for r in roles %}
+            <option value="{{ r }}"
+              {% if user and user.role == r %}
+                selected
+              {% elif not user and request.form.get('role') == r %}
+                selected
+              {% endif %}
+            >{{ r }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label>Ativo
+        <select name="ativo">
+          <option value="1" {% if not user or user.ativo==1 %}selected{% endif %}>Sim</option>
+          <option value="0" {% if user and user.ativo==0 %}selected{% endif %}>Não</option>
+        </select>
+      </label>
+      <label>Email
+        <input name="email" type="email" value="{{ user.email if user else '' }}">
+      </label>
+      <label id="empresa-label" style="display:none;">Empresa
+        <input name="empresa" placeholder="Empresa" value="{{ user.empresa if user else '' }}">
+      </label>
+    </div>
+    <p>
+      <button class="btn btn-primary" type="submit">{% if user %}Guardar{% else %}Criar{% endif %}</button>
+      <a class="btn" href="{{ url_for('admin_users') }}">Cancelar</a>
+    </p>
+  </form>
+  <script>
+    function toggleEmpresaField() {
+      var role = document.getElementById('role-select').value;
+      var empresaLabel = document.getElementById('empresa-label');
+      if (role === 'operador') {
+        empresaLabel.style.display = '';
+        empresaLabel.querySelector('input').disabled = false;
+      } else {
+        empresaLabel.style.display = 'none';
+        empresaLabel.querySelector('input').disabled = true;
+      }
+    }
+    // Executa ao carregar a página
+    document.addEventListener('DOMContentLoaded', function() {
+      toggleEmpresaField();
+    });
+  </script>
+{% endblock %}

@@ -1,0 +1,19 @@
+{% extends "base.html" %}
+{% block content %}
+  <h2>Administração</h2>
+  <div style="display:flex;flex-wrap:wrap;gap:12px;margin-bottom:2rem;">
+    <a class="btn btn-primary" href="{{ url_for('admin_alterar_regiao_viatura') }}">Alterar região de viatura existente</a>
+    {% if can('users:manage') %}
+      <a class="btn btn-primary" href="{{ url_for('admin_users') }}">Utilizadores</a>
+    {% endif %}
+    {% if can('roles:manage') %}
+      <a class="btn btn-primary" href="{{ url_for('admin_roles') }}">Perfis (roles)</a>
+    {% endif %}
+    {% if can('viaturas:import') %}
+      <a class="btn btn-primary" href="{{ url_for('admin_import_viaturas') }}">Importar viaturas (CSV)</a>
+    {% endif %}
+    {% if can('protocolos:view') %}
+      <a class="btn btn-primary" href="{{ url_for('protocolos') }}">Protocolos</a>
+    {% endif %}
+  </div>
+{% endblock %}

@@ -1,0 +1,33 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>Viaturas</h1>
+
+<p><a href="{{ url_for('importar_viaturas') }}">Importar CSV</a></p>
+
+<table border="1" cellpadding="6" cellspacing="0">
+  <thead>
+    <tr>
+      <th>matricula</th>
+      <th>nº de frota</th>
+      <th>Região</th>
+      <th>Operação</th>
+      <th>Marca</th>
+      <th>Modelo</th>
+      <th>Ativo</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for v in viaturas %}
+    <tr>
+      <td>{{ v["matricula"] }}</td>
+      <td>{{ v["nº de frota"] }}</td>
+      <td>{{ v["Região"] }}</td>
+      <td>{{ v["Operação"] }}</td>
+      <td>{{ v["Marca"] }}</td>
+      <td>{{ v["Modelo"] }}</td>
+      <td>{{ v["Ativo"] }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% endblock %}
