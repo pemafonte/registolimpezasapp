@@ -709,6 +709,18 @@ def is_postgres(conn):
 def sql_placeholder(conn):
     return "%s" if is_postgres(conn) else "?"
 
+def first_col(row, default=None):
+    if row is None:
+        return default
+    if isinstance(row, dict):
+        for v in row.values():
+            return v
+        return default
+    try:
+        return row[0]
+    except Exception:
+        return default
+
 def table_columns(conn, table_name: str) -> set[str]:
     cur = conn.cursor()
     if is_postgres(conn):
@@ -993,7 +1005,7 @@ def ensure_schema_on_boot():
 
     # Seeds
     cur.execute("SELECT COUNT(*) FROM funcionarios WHERE username='admin'")
-    if cur.fetchone()[0] == 0:
+    if first_col(cur.fetchone(), 0) == 0:
         cur.execute(
             f"INSERT INTO funcionarios (username,password,nome,role,ativo) VALUES ({ph},{ph},{ph},{ph},1)",
             ("admin", generate_password_hash("1234"), "Administrador", "admin")
@@ -1011,7 +1023,7 @@ def ensure_schema_on_boot():
     """)
 
     cur.execute("SELECT COUNT(*) FROM viaturas")
-    if cur.fetchone()[0] == 0:
+    if first_col(cur.fetchone(), 0) == 0:
         cur.executemany(
             f"INSERT INTO viaturas (matricula, descricao, filial, num_frota, ativo) VALUES ({ph},{ph},{ph},{ph},1)",
             [
@@ -1090,7 +1102,7 @@ def ensure_schema_on_boot():
             pass
 
     cur.execute("SELECT COUNT(*) FROM protocolos")
-    if cur.fetchone()[0] == 0:
+    if first_col(cur.fetchone(), 0) == 0:
         prot1 = {"passos": ["Inspeção interior", "Aspirar", "Desinfetar superfícies", "Vidros interiores", "Check final"]}
         prot2 = {"passos": ["Inspeção exterior", "Lavagem chassis", "Vidros exteriores", "Verificar níveis", "Check final"]}
         cur.execute(f"INSERT INTO protocolos (nome, passos_json, frequencia_dias, ativo) VALUES ({ph},{ph},{ph},1)",
@@ -2631,7 +2643,7 @@ def admin_run_migrations():
     conn.commit()
 
     # Seed opcional de protocolos (só se estiver vazio)
-    qtd = conn.execute("SELECT COUNT(*) FROM protocolos;").fetchone()[0]
+    qtd = first_col(conn.execute("SELECT COUNT(*) FROM protocolos;").fetchone(), 0)
     if qtd == 0:
         conn.executemany(
             "INSERT INTO protocolos (nome, ativo) VALUES (?,1);",
@@ -2816,7 +2828,7 @@ def novo_registo():
         SELECT COUNT(*) FROM registos_limpeza
         WHERE viatura_id = ? AND date(data_hora) = ?
     """, (viatura_id, hoje_val))
-    ja_limpo_hoje = cur.fetchone()[0] > 0
+    ja_limpo_hoje = first_col(cur.fetchone(), 0) > 0
 
     pedido_autorizado = pedido_autorizado_hoje(viatura_id, funcionario_id)
     extra_autorizada = 1 if pedido_autorizado else 0
