@@ -29,7 +29,7 @@ TEMPLATES_DIR = BASE_DIR / "templates"
 OVERWRITE_TEMPLATES = False
 APP_TITLE = "Registo Limpezas de Viaturas Grupo Tejo"
 APP_SIGNATURE = "Created by Pedro Fonte"
-APP_BUILD = "2026-05-27-export-fix"
+APP_BUILD = "2026-05-27-historico-inspecoes"
 
 ALLOWED_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".pdf"}
 
@@ -146,7 +146,7 @@ def _gestor_viaturas_para_inspecao(cur, ph, regiao_gestor: str | None):
 
 
 def _processar_inspecoes_viaturas_gestor(
-    cur, ph, selected_ids: list[str], regiao_gestor: str | None
+    cur, ph, selected_ids: list[str], regiao_gestor: str | None, gestor_id: int | None
 ) -> list[str]:
     erros: list[str] = []
     for vid_str in selected_ids:
@@ -175,15 +175,206 @@ def _processar_inspecoes_viaturas_gestor(
             erros.append(f"Viatura {vid}: não encontrada ou fora da sua região.")
             continue
 
+        verif_em = now_pt_iso()
         cur.execute(
             f"""UPDATE viaturas
                 SET verificacao_limpeza={ph},
                     comentarios_verificacao={ph},
                     verificacao_em={ph}
                 WHERE id={ph}""",
-            (status, comentarios_to_save, now_pt_iso(), vid),
+            (status, comentarios_to_save, verif_em, vid),
+        )
+        cur.execute(
+            f"""INSERT INTO historico_inspecoes_viaturas
+                (viatura_id, gestor_id, verificacao_limpeza, comentarios_verificacao, verificacao_em)
+                VALUES ({ph}, {ph}, {ph}, {ph}, {ph})""",
+            (vid, gestor_id, status, comentarios_to_save, verif_em),
         )
     return erros
+
+
+def _historico_inspecoes_sql_filters(ph, mes, regiao_gestor):
+    where = ["1=1"]
+    params: list = []
+    if mes:
+        where.append(f"substr(h.verificacao_em, 1, 7) = {ph}")
+        params.append(mes)
+    if regiao_gestor:
+        where.append(f"COALESCE(v.regiao,'') = {ph}")
+        params.append(regiao_gestor)
+    return where, params
+
+
+def _fetch_historico_inspecoes_list(cur, ph, regiao_gestor: str | None, mes: str | None = None):
+    where, params = _historico_inspecoes_sql_filters(ph, mes, regiao_gestor)
+    cur.execute(
+        f"""
+        SELECT
+            h.id,
+            h.verificacao_em,
+            h.verificacao_limpeza,
+            h.comentarios_verificacao,
+            v.matricula,
+            v.num_frota,
+            v.descricao,
+            v.regiao,
+            COALESCE(g.nome, g.username) AS gestor
+        FROM historico_inspecoes_viaturas h
+        JOIN viaturas v ON v.id = h.viatura_id
+        LEFT JOIN funcionarios g ON g.id = h.gestor_id
+        WHERE {" AND ".join(where)}
+        ORDER BY h.verificacao_em DESC, h.id DESC
+        """,
+        params,
+    )
+    return [dict(r) for r in cur.fetchall()]
+
+
+def _fetch_historico_inspecoes_dataframe(conn, mes, user_role, user_id):
+    """Histórico de inspeções para exportação (apenas gestor/admin)."""
+    import pandas as pd
+
+    if user_role not in ("gestor", "admin"):
+        return pd.DataFrame()
+
+    cur = conn.cursor()
+    ph = sql_placeholder(conn)
+    regiao_gestor = None
+    if user_role == "gestor":
+        cur.execute(f"SELECT regiao FROM funcionarios WHERE id={ph}", (user_id,))
+        row = cur.fetchone()
+        regiao_gestor = (row["regiao"] or "").strip() if row and row["regiao"] else None
+
+    where, params = _historico_inspecoes_sql_filters(ph, mes, regiao_gestor)
+    sql = f"""
+        SELECT
+            h.verificacao_em AS data_hora_inspecao,
+            substr(h.verificacao_em, 1, 10) AS data_inspecao,
+            v.matricula,
+            v.num_frota,
+            v.descricao,
+            v.regiao,
+            h.verificacao_limpeza AS estado,
+            h.comentarios_verificacao AS comentarios,
+            COALESCE(g.nome, g.username) AS gestor
+        FROM historico_inspecoes_viaturas h
+        JOIN viaturas v ON v.id = h.viatura_id
+        LEFT JOIN funcionarios g ON g.id = h.gestor_id
+        WHERE {" AND ".join(where)}
+        ORDER BY h.verificacao_em DESC, v.matricula
+    """
+    return fetch_dataframe(conn, sql, params)
+
+
+def _build_registos_limpeza_export_df(conn, mes, user_role, user_id, *, normalizar_verificacao: bool = False):
+    """DataFrame dos registos de limpeza para exportação Excel."""
+    import pandas as pd
+
+    cur = conn.cursor()
+    ph = sql_placeholder(conn)
+    regiao_user = None
+    desc_list_user: list[str] = []
+    if user_role in ("operador", "gestor"):
+        regiao_user, desc_list_user = load_user_scope(cur, user_id)
+
+    sql = f"""
+        SELECT
+            r.id as id_regiao,
+            r.data_hora,
+            v.matricula,
+            v.num_frota,
+            p.nome as protocolo,
+            f.nome as funcionario,
+            r.local,
+            r.estado,
+            r.observacoes,
+            r.hora_inicio,
+            r.hora_fim,
+            r.extra_autorizada,
+            r.verificacao_limpeza,
+            r.comentarios_verificacao,
+            v.regiao
+        FROM registos_limpeza r
+        JOIN viaturas v ON v.id = r.viatura_id
+        JOIN protocolos p ON p.id = r.protocolo_id
+        JOIN funcionarios f ON f.id = r.funcionario_id
+        WHERE 1=1
+    """
+    params = []
+    if mes:
+        sql += f" AND substr(r.data_hora, 1, 7) = {ph}"
+        params.append(mes)
+    if user_role == "operador":
+        sql, params = apply_operator_scope_sql(
+            sql,
+            params,
+            regiao_user,
+            desc_list_user,
+            regiao_col="v.regiao",
+            descricao_col="v.descricao",
+        )
+    elif regiao_user and user_role != "admin":
+        sql += f" AND v.regiao = {ph}"
+        params.append(regiao_user)
+    sql += " ORDER BY r.data_hora DESC, r.id DESC"
+    df = fetch_dataframe(conn, sql, params)
+
+    if df.empty:
+        return df
+
+    df = df.sort_values(["regiao", "data_hora", "id_regiao"])
+    df["id_regiao"] = (df.groupby("regiao").cumcount() + 1).apply(lambda x: f"{x:03d}")
+    df["id_regiao"] = df["regiao"].fillna("—") + "-" + df["id_regiao"]
+    df = df.sort_values(["data_hora", "id_regiao"], ascending=[False, False])
+    df["data"] = pd.to_datetime(df["data_hora"]).dt.date
+
+    if normalizar_verificacao:
+        df["verificacao_limpeza"] = df["verificacao_limpeza"].apply(
+            lambda x: "Conforme"
+            if str(x).strip().lower() == "conforme"
+            else ("Não conforme" if str(x).strip().lower() in {"não conforme", "nao conforme"} else "")
+        )
+
+    def calc_dur(row):
+        try:
+            if row["hora_inicio"] and row["hora_fim"]:
+                d = pd.to_datetime(row["data_hora"]).date()
+                t1 = pd.to_datetime(f"{d} {row['hora_inicio']}:00")
+                t2 = pd.to_datetime(f"{d} {row['hora_fim']}:00")
+                return max(0, int((t2 - t1).total_seconds() // 60))
+        except Exception:
+            pass
+        return None
+
+    df["tempo_limpeza_min"] = df.apply(calc_dur, axis=1)
+    df["tipo_limpeza"] = df["extra_autorizada"].apply(lambda x: "Extra" if x == 1 else "Normal")
+    cols = [
+        "id_regiao", "data", "matricula", "num_frota", "protocolo",
+        "funcionario", "local", "estado", "observacoes",
+        "hora_inicio", "hora_fim", "tempo_limpeza_min", "tipo_limpeza",
+        "verificacao_limpeza", "comentarios_verificacao",
+    ]
+    return df[cols]
+
+
+def _write_registos_excel_file(fname, df_registos, df_protocolos, df_inspecoes=None):
+    import pandas as pd
+
+    with pd.ExcelWriter(fname, engine="xlsxwriter") as writer:
+        wrote = False
+        if df_registos is not None and not df_registos.empty:
+            df_registos.to_excel(writer, index=False, sheet_name="Registos de Limpeza")
+            wrote = True
+        if df_protocolos is not None and not df_protocolos.empty:
+            df_protocolos.to_excel(writer, index=False, sheet_name="Protocolos")
+            wrote = True
+        if df_inspecoes is not None and not df_inspecoes.empty:
+            df_inspecoes.to_excel(writer, index=False, sheet_name="Inspeções viaturas")
+            wrote = True
+        if not wrote:
+            pd.DataFrame({"info": ["Sem dados para exportar"]}).to_excel(
+                writer, index=False, sheet_name="Info"
+            )
 
 
 app = Flask(__name__, template_folder=str(BASE_DIR))
@@ -1193,6 +1384,23 @@ def ensure_schema_on_boot():
     cur.execute("CREATE INDEX IF NOT EXISTS idx_registos_funcionario ON registos_limpeza(funcionario_id)")
     cur.execute("CREATE INDEX IF NOT EXISTS idx_registos_local ON registos_limpeza(local)")
     cur.execute("CREATE INDEX IF NOT EXISTS idx_anexos_registo ON anexos(registo_id)")
+
+    cur.execute(f"""
+        CREATE TABLE IF NOT EXISTS historico_inspecoes_viaturas (
+            id {id_col},
+            viatura_id INTEGER NOT NULL,
+            gestor_id INTEGER,
+            verificacao_limpeza TEXT,
+            comentarios_verificacao TEXT,
+            verificacao_em TEXT NOT NULL,
+            criado_em TEXT DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (viatura_id) REFERENCES viaturas(id) ON DELETE CASCADE,
+            FOREIGN KEY (gestor_id) REFERENCES funcionarios(id) ON DELETE SET NULL
+        )
+    """)
+    cur.execute(
+        "CREATE INDEX IF NOT EXISTS idx_hist_inspec_viat ON historico_inspecoes_viaturas(viatura_id, verificacao_em)"
+    )
     
     # (Re)criar view detalhe
     cur.execute("DROP VIEW IF EXISTS vw_registos_detalhe")
@@ -1410,6 +1618,44 @@ def ensure_viatura_inspecao_columns():
 
 
 ensure_viatura_inspecao_columns()
+
+
+def ensure_historico_inspecoes_backfill():
+    """Migra o estado atual da viatura para o histórico (uma vez por viatura)."""
+    conn = get_conn()
+    cur = conn.cursor()
+    ph = sql_placeholder(conn)
+    try:
+        cur.execute(
+            f"""
+            SELECT v.id, v.verificacao_limpeza, v.comentarios_verificacao, v.verificacao_em
+            FROM viaturas v
+            WHERE v.verificacao_em IS NOT NULL AND TRIM(v.verificacao_em) <> ''
+              AND NOT EXISTS (
+                SELECT 1 FROM historico_inspecoes_viaturas h WHERE h.viatura_id = v.id
+              )
+            """
+        )
+        for row in cur.fetchall():
+            cur.execute(
+                f"""INSERT INTO historico_inspecoes_viaturas
+                    (viatura_id, gestor_id, verificacao_limpeza, comentarios_verificacao, verificacao_em)
+                    VALUES ({ph}, NULL, {ph}, {ph}, {ph})""",
+                (
+                    row["id"],
+                    row["verificacao_limpeza"],
+                    row["comentarios_verificacao"],
+                    row["verificacao_em"],
+                ),
+            )
+        conn.commit()
+    except Exception:
+        conn.rollback()
+    finally:
+        conn.close()
+
+
+ensure_historico_inspecoes_backfill()
 
 
 def ensure_empresa_in_funcionarios():
@@ -2307,7 +2553,9 @@ def gestor_verificacoes():
             conn.close()
             return redirect(url_for("gestor_verificacoes"))
 
-        erros = _processar_inspecoes_viaturas_gestor(cur, ph, selected, regiao_gestor)
+        erros = _processar_inspecoes_viaturas_gestor(
+            cur, ph, selected, regiao_gestor, session.get("user_id")
+        )
         if erros:
             conn.rollback()
             conn.close()
@@ -2319,12 +2567,16 @@ def gestor_verificacoes():
         flash("Inspeções registadas/atualizadas com sucesso.", "success")
         return redirect(url_for("gestor_verificacoes"))
 
+    mes_hist = (request.args.get("mes") or "").strip() or None
     viaturas_inspecao = _gestor_viaturas_para_inspecao(cur, ph, regiao_gestor)
+    historico = _fetch_historico_inspecoes_list(cur, ph, regiao_gestor, mes_hist)
     conn.close()
 
     return render_template(
         "gestor_verificacoes.html",
         viaturas=viaturas_inspecao,
+        historico=historico,
+        mes_hist=mes_hist,
         regiao_gestor=regiao_gestor,
         signature=APP_SIGNATURE,
     )
@@ -3843,260 +4095,62 @@ def registos():
 # -----------------------------------------------------------------------------
 # Export Excel
 # -----------------------------------------------------------------------------
-@app.route("/export/excel")
-@login_required
-@require_perm("export:excel")
-def export_excel():
+def _protocolos_export_dataframe(conn):
     import pandas as pd
-    mes = request.args.get("mes")
-    conn = get_conn()
-    cur = conn.cursor()
-    ph = sql_placeholder(conn)
 
-    # Obter região do utilizador (operador ou gestor)
-    user_id = session.get("user_id")
-    user_role = session.get("role")
-    regiao_user = None
-    desc_list_user: list[str] = []
-    if user_role in ("operador", "gestor"):
-        regiao_user, desc_list_user = load_user_scope(cur, user_id)
-
-    sql = f"""
-        SELECT
-            r.id as id_regiao,
-            r.data_hora,
-            v.matricula,
-            v.num_frota,
-            p.nome as protocolo,
-            f.nome as funcionario,
-            r.local,
-            r.estado,
-            r.observacoes,
-            r.hora_inicio,
-            r.hora_fim,
-            r.extra_autorizada,
-            r.verificacao_limpeza,
-            r.comentarios_verificacao,
-            v.regiao
-        FROM registos_limpeza r
-        JOIN viaturas v ON v.id = r.viatura_id
-        JOIN protocolos p ON p.id = r.protocolo_id
-        JOIN funcionarios f ON f.id = r.funcionario_id
-        WHERE 1=1
-    """
-    params = []
-    if mes:
-        sql += f" AND substr(r.data_hora, 1, 7) = {ph}"
-        params.append(mes)
-    if user_role == "operador":
-        sql, params = apply_operator_scope_sql(
-            sql,
-            params,
-            regiao_user,
-            desc_list_user,
-            regiao_col="v.regiao",
-            descricao_col="v.descricao",
-        )
-    elif regiao_user and user_role != "admin":
-        sql += f" AND v.regiao = {ph}"
-        params.append(regiao_user)
-    sql += " ORDER BY r.data_hora DESC, r.id DESC"
-    df = fetch_dataframe(conn, sql, params)
-    conn.close()
-
-    if not df.empty:
-        # Ordena por regiao e data/hora ASC (mais antigo primeiro)
-        df = df.sort_values(["regiao", "data_hora", "id_regiao"])
-        # Gera o ID sequencial por regiao
-        df["id_regiao"] = (
-            df.groupby("regiao").cumcount() + 1
-        ).apply(lambda x: f"{x:03d}")
-        df["id_regiao"] = df["regiao"].fillna("—") + "-" + df["id_regiao"]
-        # Agora ordena para exportar do mais recente para o mais antigo
-        df = df.sort_values(["data_hora", "id_regiao"], ascending=[False, False])
-        df["data"] = pd.to_datetime(df["data_hora"]).dt.date
-        # Normalizar campo de verificação
-        df['verificacao_limpeza'] = df['verificacao_limpeza'].apply(
-            lambda x: "Conforme" if str(x).strip().lower() == "conforme"
-            else ("Não conforme" if str(x).strip().lower() in {"não conforme", "nao conforme"} else "")
-        )
-        # Calcular tempo de limpeza (em minutos)
-        def calc_dur(row):
-            try:
-                if row['hora_inicio'] and row['hora_fim']:
-                    d = pd.to_datetime(row['data_hora']).date()
-                    t1 = pd.to_datetime(f"{d} {row['hora_inicio']}:00")
-                    t2 = pd.to_datetime(f"{d} {row['hora_fim']}:00")
-                    return max(0, int((t2 - t1).total_seconds() // 60))
-            except Exception:
-                pass
-            return None
-
-        df['tempo_limpeza_min'] = df.apply(calc_dur, axis=1)
-        df['tipo_limpeza'] = df['extra_autorizada'].apply(lambda x: "Extra" if x == 1 else "Normal")
-
-        # Reorganizar colunas
-        cols = [
-            "id_regiao", "data", "matricula", "num_frota", "protocolo",
-            "funcionario", "local", "estado", "observacoes",
-            "hora_inicio", "hora_fim", "tempo_limpeza_min", "tipo_limpeza", "verificacao_limpeza", "comentarios_verificacao"
-        ]
-        df = df[cols]
-
-    fname = EXPORT_DIR / f"registos_limpeza_{mes or 'todos'}_{now_pt().strftime('%Y%m%d_%H%M%S')}.xlsx"
-
-    # Sheet principal: registos
-    # Sheet secundária: protocolos
-    conn = get_conn()
     df_protocolos = fetch_dataframe(
         conn,
         "SELECT nome, passos_json, frequencia_dias FROM protocolos WHERE ativo=1 ORDER BY nome",
     )
-    conn.close()
 
-    # Transformar passos_json em texto
     def passos_text(row):
         try:
-            data = json.loads(row['passos_json'] or '{}')
-            return "\n".join(data.get('passos', []))
+            data = json.loads(row["passos_json"] or "{}")
+            return "\n".join(data.get("passos", []))
         except Exception:
             return ""
+
     if not df_protocolos.empty:
-        df_protocolos['passos'] = df_protocolos.apply(passos_text, axis=1)
-        df_protocolos = df_protocolos[['nome', 'passos', 'frequencia_dias']]
+        df_protocolos["passos"] = df_protocolos.apply(passos_text, axis=1)
+        df_protocolos = df_protocolos[["nome", "passos", "frequencia_dias"]]
+    return df_protocolos
 
-    with pd.ExcelWriter(fname, engine="xlsxwriter") as writer:
-        if not df.empty:
-            df.to_excel(writer, index=False, sheet_name="Registos de Limpeza")
-        if not df_protocolos.empty:
-            df_protocolos.to_excel(writer, index=False, sheet_name="Protocolos")
 
+@app.route("/export/excel")
+@login_required
+@require_perm("export:excel")
+def export_excel():
+    mes = request.args.get("mes")
+    user_id = session.get("user_id")
+    user_role = session.get("role")
+    conn = get_conn()
+    df = _build_registos_limpeza_export_df(
+        conn, mes, user_role, user_id, normalizar_verificacao=True
+    )
+    df_inspecoes = _fetch_historico_inspecoes_dataframe(conn, mes, user_role, user_id)
+    df_protocolos = _protocolos_export_dataframe(conn)
+    conn.close()
+
+    fname = EXPORT_DIR / f"registos_limpeza_{mes or 'todos'}_{now_pt().strftime('%Y%m%d_%H%M%S')}.xlsx"
+    _write_registos_excel_file(fname, df, df_protocolos, df_inspecoes)
     return send_file(fname, as_attachment=True)
+
 
 @app.route("/export/registos_excel")
 @login_required
 @require_perm("export:excel")
 def export_registos_excel():
-    import pandas as pd
     mes = request.args.get("mes")
-    conn = get_conn()
-    cur = conn.cursor()
-    ph = sql_placeholder(conn)
-
-    # Obter região do utilizador (operador ou gestor)
     user_id = session.get("user_id")
     user_role = session.get("role")
-    regiao_user = None
-    desc_list_user: list[str] = []
-    if user_role in ("operador", "gestor"):
-        regiao_user, desc_list_user = load_user_scope(cur, user_id)
-
-    sql = f"""
-        SELECT
-            r.id as id_regiao,
-            r.data_hora,
-            v.matricula,
-            v.num_frota,
-            p.nome as protocolo,
-            f.nome as funcionario,
-            r.local,
-            r.estado,
-            r.observacoes,
-            r.hora_inicio,
-            r.hora_fim,
-            r.extra_autorizada,
-            r.verificacao_limpeza,
-            r.comentarios_verificacao,
-            v.regiao
-        FROM registos_limpeza r
-        JOIN viaturas v ON v.id = r.viatura_id
-        JOIN protocolos p ON p.id = r.protocolo_id
-        JOIN funcionarios f ON f.id = r.funcionario_id
-        WHERE 1=1
-    """
-    params = []
-    if mes:
-        sql += f" AND substr(r.data_hora, 1, 7) = {ph}"
-        params.append(mes)
-    if user_role == "operador":
-        sql, params = apply_operator_scope_sql(
-            sql,
-            params,
-            regiao_user,
-            desc_list_user,
-            regiao_col="v.regiao",
-            descricao_col="v.descricao",
-        )
-    elif regiao_user and user_role != "admin":
-        sql += f" AND v.regiao = {ph}"
-        params.append(regiao_user)
-    sql += " ORDER BY r.data_hora DESC, r.id DESC"
-    df = fetch_dataframe(conn, sql, params)
+    conn = get_conn()
+    df = _build_registos_limpeza_export_df(conn, mes, user_role, user_id)
+    df_inspecoes = _fetch_historico_inspecoes_dataframe(conn, mes, user_role, user_id)
+    df_protocolos = _protocolos_export_dataframe(conn)
     conn.close()
-
-    if not df.empty:
-        # Ordena por regiao e data/hora ASC (mais antigo primeiro)
-        df = df.sort_values(["regiao", "data_hora", "id_regiao"])
-        # Gera o ID sequencial por regiao
-        df["id_regiao"] = (
-            df.groupby("regiao").cumcount() + 1
-        ).apply(lambda x: f"{x:03d}")
-        df["id_regiao"] = df["regiao"].fillna("—") + "-" + df["id_regiao"]
-        # Agora ordena para exportar do mais recente para o mais antigo
-        df = df.sort_values(["data_hora", "id_regiao"], ascending=[False, False])
-        df["data"] = pd.to_datetime(df["data_hora"]).dt.date
-
-        # Calcular tempo de limpeza (em minutos)
-        def calc_dur(row):
-            try:
-                if row['hora_inicio'] and row['hora_fim']:
-                    d = pd.to_datetime(row['data_hora']).date()
-                    t1 = pd.to_datetime(f"{d} {row['hora_inicio']}:00")
-                    t2 = pd.to_datetime(f"{d} {row['hora_fim']}:00")
-                    return max(0, int((t2 - t1).total_seconds() // 60))
-            except Exception:
-                pass
-            return None
-
-        df['tempo_limpeza_min'] = df.apply(calc_dur, axis=1)
-        df['tipo_limpeza'] = df['extra_autorizada'].apply(lambda x: "Extra" if x == 1 else "Normal")
-
-        # Reorganizar colunas
-        cols = [
-            "id_regiao", "data", "matricula", "num_frota", "protocolo",
-            "funcionario", "local", "estado", "observacoes",
-            "hora_inicio", "hora_fim", "tempo_limpeza_min", "tipo_limpeza", "verificacao_limpeza", "comentarios_verificacao"
-        ]
-        df = df[cols]
 
     fname = EXPORT_DIR / f"registos_limpeza_{mes or 'todos'}_{now_pt().strftime('%Y%m%d_%H%M%S')}.xlsx"
-
-    # Sheet principal: registos
-    # Sheet secundária: protocolos
-    conn = get_conn()
-    df_protocolos = fetch_dataframe(
-        conn,
-        "SELECT nome, passos_json, frequencia_dias FROM protocolos WHERE ativo=1 ORDER BY nome",
-    )
-    conn.close()
-
-    # Transformar passos_json em texto
-    def passos_text(row):
-        try:
-            data = json.loads(row['passos_json'] or '{}')
-            return "\n".join(data.get('passos', []))
-        except Exception:
-            return ""
-    if not df_protocolos.empty:
-        df_protocolos['passos'] = df_protocolos.apply(passos_text, axis=1)
-        df_protocolos = df_protocolos[['nome', 'passos', 'frequencia_dias']]
-
-    with pd.ExcelWriter(fname, engine="xlsxwriter") as writer:
-        if not df.empty:
-            df.to_excel(writer, index=False, sheet_name="Registos de Limpeza")
-        if not df_protocolos.empty:
-            df_protocolos.to_excel(writer, index=False, sheet_name="Protocolos")
-
+    _write_registos_excel_file(fname, df, df_protocolos, df_inspecoes)
     return send_file(fname, as_attachment=True)
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))

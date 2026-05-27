@@ -3,7 +3,8 @@
   <h2>Inspeção de Viaturas (Gestor)</h2>
   <p class="muted" style="margin-bottom:1rem;">
     Selecione uma ou mais viaturas da sua região{% if regiao_gestor %} ({{ regiao_gestor }}){% endif %}
-    e indique se estão <strong>limpas</strong> ou <strong>sujas</strong>. A inspeção é independente dos protocolos de limpeza.
+    e indique se estão <strong>limpas</strong> ou <strong>sujas</strong>. Cada gravação fica no histórico (todas as datas).
+    A inspeção é independente dos protocolos de limpeza.
   </p>
 
   {% if not viaturas %}
@@ -71,5 +72,53 @@
         {% endfor %}
       });
     </script>
+  {% endif %}
+
+  <hr style="margin:2rem 0;">
+
+  <h3>Histórico de inspeções</h3>
+  <form method="get" style="margin-bottom:1rem;display:flex;gap:10px;align-items:center;flex-wrap:wrap;">
+    <label>Filtrar por mês:
+      <input type="month" name="mes" value="{{ mes_hist or '' }}">
+    </label>
+    <button class="btn" type="submit">Filtrar</button>
+    {% if mes_hist %}
+      <a class="btn" href="{{ url_for('gestor_verificacoes') }}">Limpar</a>
+    {% endif %}
+    <a class="btn btn-primary" href="{{ url_for('export_registos_excel', mes=mes_hist) if mes_hist else url_for('export_registos_excel') }}">
+      Exportar Excel (com histórico)
+    </a>
+  </form>
+  <p class="muted">Cada linha é uma inspeção registada. No Excel, a folha <strong>Inspeções viaturas</strong> contém todo este histórico (gestor/admin).</p>
+
+  {% if not historico %}
+    <div class="muted">Sem inspeções no período selecionado.</div>
+  {% else %}
+    <table style="width:100%;border-collapse:collapse;">
+      <thead>
+        <tr>
+          <th>Data/Hora</th>
+          <th>Matrícula</th>
+          <th>Nº frota / Descrição</th>
+          <th>Região</th>
+          <th>Estado</th>
+          <th>Comentário</th>
+          <th>Gestor</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for h in historico %}
+        <tr>
+          <td>{{ h.verificacao_em }}</td>
+          <td><b>{{ h.matricula }}</b></td>
+          <td>{{ h.num_frota or "" }}{% if h.descricao %} — {{ h.descricao }}{% endif %}</td>
+          <td>{{ h.regiao or "—" }}</td>
+          <td>{{ h.verificacao_limpeza }}</td>
+          <td>{{ h.comentarios_verificacao or "—" }}</td>
+          <td>{{ h.gestor or "—" }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
   {% endif %}
 {% endblock %}
