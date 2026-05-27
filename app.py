@@ -62,9 +62,34 @@ def parse_descricao_viaturas(value: str | None) -> list[str]:
     return [p.strip() for p in parts if p and p.strip()]
 
 
+def sql_date_expr(col: str) -> str:
+    """YYYY-MM-DD a partir de data_hora em texto ISO (SQLite e PostgreSQL)."""
+    return f"substr({col}, 1, 10)"
+
+
 def sql_date_eq_today(col: str, conn) -> tuple[str, str]:
     ph = sql_placeholder(conn)
-    return f"date({col}) = {ph}", today_pt_iso()
+    return f"{sql_date_expr(col)} = {ph}", today_pt_iso()
+
+
+def database_url() -> str | None:
+    for key in (
+        "DATABASE_URL",
+        "POSTGRES_URL",
+        "POSTGRESQL_URL",
+        "RENDER_DATABASE_URL",
+        "INTERNAL_DATABASE_URL",
+    ):
+        val = (os.environ.get(key) or "").strip()
+        if val:
+            return val
+    return None
+
+
+def normalize_pg_url(url: str) -> str:
+    if url.startswith("postgres://"):
+        return "postgresql://" + url[len("postgres://") :]
+    return url
 
 
 def _gestor_ultimos_registos_verificacao(cur, ph, regiao_gestor: str | None, *, apenas_pendentes: bool):
@@ -151,7 +176,13 @@ UPLOAD_DIR.mkdir(exist_ok=True)
 EXPORT_DIR.mkdir(exist_ok=True)
 TEMPLATES_DIR.mkdir(exist_ok=True)
 
-print("### DB em uso:", DB_PATH)
+if database_url() and psycopg2:
+    print("### DB em uso: PostgreSQL (DATABASE_URL)")
+elif os.environ.get("RENDER") or os.environ.get("FLASK_ENV") == "production":
+    print("### DB em uso:", DB_PATH)
+    print("### AVISO: DATABASE_URL não está definida — no Render deve ligar a BD PostgreSQL.")
+else:
+    print("### DB em uso:", DB_PATH)
 
 
 # -----------------------------------------------------------------------------
@@ -692,16 +723,57 @@ def write_templates():
 # Helpers / filtros
 # -----------------------------------------------------------------------------
 def get_conn():
-    db_url = os.environ.get("DATABASE_URL")
+    db_url = database_url()
     if db_url and psycopg2:
-        # Heroku/PostgreSQL
-        conn = psycopg2.connect(db_url, cursor_factory=CompatRealDictCursor)
+        conn = psycopg2.connect(normalize_pg_url(db_url), cursor_factory=CompatRealDictCursor)
         return conn
-    else:
-        # Local/SQLite
-        conn = sqlite3.connect(DB_PATH)
-        conn.row_factory = sqlite3.Row
-        return conn
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+def qmark_to_postgres(sql: str) -> str:
+    """
+    Converte placeholders SQLite (?) para PostgreSQL (%s),
+    ignorando interrogações dentro de strings SQL.
+    """
+    out = []
+    in_single = False
+    in_double = False
+    i = 0
+    while i < len(sql):
+        ch = sql[i]
+        if ch == "'" and not in_double:
+            # Trata escaped quote em SQL: ''
+            if in_single and i + 1 < len(sql) and sql[i + 1] == "'":
+                out.append("''")
+                i += 2
+                continue
+            in_single = not in_single
+            out.append(ch)
+            i += 1
+            continue
+        if ch == '"' and not in_single:
+            in_double = not in_double
+            out.append(ch)
+            i += 1
+            continue
+        if ch == "?" and not in_single and not in_double:
+            out.append("%s")
+        else:
+            out.append(ch)
+        i += 1
+    return "".join(out)
+
+class CompatRealDictCursor(psycopg2.extras.RealDictCursor if psycopg2 else object):
+    def execute(self, query, vars=None):
+        if isinstance(query, str) and "?" in query:
+            query = qmark_to_postgres(query)
+        return super().execute(query, vars)
+
+    def executemany(self, query, vars_list):
+        if isinstance(query, str) and "?" in query:
+            query = qmark_to_postgres(query)
+        return super().executemany(query, vars_list)
 
 def qmark_to_postgres(sql: str) -> str:
     """
@@ -871,10 +943,8 @@ def inject_can():
 def ensure_custo_limpeza_in_protocolos():
     conn = get_conn()
     cur = conn.cursor()
-    # PRAGMA só existe em SQLite, ignora em PostgreSQL
     try:
-        cur.execute("PRAGMA table_info(protocolos)")
-        cols = {r["name"] for r in cur.fetchall()}
+        cols = table_columns(conn, "protocolos")
         if "custo_limpeza" not in cols:
             cur.execute("ALTER TABLE protocolos ADD COLUMN custo_limpeza REAL DEFAULT 25")
             conn.commit()
@@ -888,8 +958,7 @@ def ensure_regiao_in_registos_limpeza():
     conn = get_conn()
     cur = conn.cursor()
     try:
-        cur.execute("PRAGMA table_info(registos_limpeza)")
-        cols = {r["name"] for r in cur.fetchall()}
+        cols = table_columns(conn, "registos_limpeza")
         if "regiao" not in cols:
             cur.execute("ALTER TABLE registos_limpeza ADD COLUMN regiao TEXT")
             conn.commit()
@@ -1244,7 +1313,10 @@ def login():
         ph = sql_placeholder(conn)
         # Compatível com SQLite e PostgreSQL
         if is_postgres(conn):
-            cur.execute(f"SELECT * FROM funcionarios WHERE username = {ph} AND ativo=1", (username,))
+            cur.execute(
+                f"SELECT * FROM funcionarios WHERE LOWER(username) = LOWER({ph}) AND ativo=1",
+                (username,),
+            )
         else:
             cur.execute(f"SELECT * FROM funcionarios WHERE username = {ph} COLLATE NOCASE AND ativo=1", (username,))
         user = cur.fetchone()
@@ -1331,10 +1403,7 @@ def home():
     # Helper para adicionar filtro de região e mês
     def filtro_mes_regiao(sql, params, alias_registos="r", alias_viaturas="v"):
         if mes:
-            if is_postgres(conn):
-                sql += f" AND TO_CHAR({alias_registos}.data_hora, 'YYYY-MM') = {ph}"
-            else:
-                sql += f" AND strftime('%Y-%m', {alias_registos}.data_hora) = {ph}"
+            sql += f" AND substr({alias_registos}.data_hora, 1, 7) = {ph}"
             params.append(mes)
         if regiao_gestor:
             sql += f" AND {alias_viaturas}.regiao = {ph}"
@@ -1372,26 +1441,17 @@ def home():
     today_str = today_pt_iso()
     week_start_str = (today_pt() - timedelta(days=6)).isoformat()
     month_str = today_pt().strftime("%Y-%m")
-    if is_postgres(conn):
-        dt_fmt = "TO_CHAR(r.data_hora, 'YYYY-MM')"
-        dt_today_sql = f"date(r.data_hora) = {ph}"
-        dt_today_param = today_str
-        dt_7days_sql = f"date(r.data_hora) >= {ph}"
-        dt_7days_param = week_start_str
-        dt_eq_sql = f"{dt_fmt} = {ph}"
-        dt_eq_param = month_str
-    else:
-        dt_fmt = "strftime('%Y-%m', r.data_hora)"
-        dt_today_sql = f"date(r.data_hora) = {ph}"
-        dt_today_param = today_str
-        dt_7days_sql = f"date(r.data_hora) >= {ph}"
-        dt_7days_param = week_start_str
-        dt_eq_sql = f"{dt_fmt} = {ph}"
-        dt_eq_param = month_str
+    dt_fmt = "substr(r.data_hora, 1, 7)"
+    dt_today_sql = f"{sql_date_expr('r.data_hora')} = {ph}"
+    dt_today_param = today_str
+    dt_7days_sql = f"{sql_date_expr('r.data_hora')} >= {ph}"
+    dt_7days_param = week_start_str
+    dt_eq_sql = f"{dt_fmt} = {ph}"
+    dt_eq_param = month_str
 
     # Última limpeza por viatura/protocolo (filtrada por região)
     last_map_sql = """
-        SELECT r.viatura_id, r.protocolo_id, MAX(datetime(r.data_hora)) AS ult
+        SELECT r.viatura_id, r.protocolo_id, MAX(r.data_hora) AS ult
         FROM registos_limpeza r
         JOIN viaturas v ON v.id = r.viatura_id
         WHERE 1=1
@@ -1406,7 +1466,7 @@ def home():
 
     # Última (qualquer) por viatura (filtrada por região)
     last_any_sql = """
-        SELECT v.id as viatura_id, MAX(datetime(r.data_hora)) AS ult
+        SELECT v.id as viatura_id, MAX(r.data_hora) AS ult
         FROM viaturas v
         LEFT JOIN registos_limpeza r ON v.id = r.viatura_id
         WHERE v.ativo=1
@@ -1995,9 +2055,9 @@ def viaturas():
           SELECT r.*
           FROM registos_limpeza r
           JOIN (
-            SELECT viatura_id, MAX(datetime(data_hora)) AS ult
+            SELECT viatura_id, MAX(data_hora) AS ult
             FROM registos_limpeza GROUP BY viatura_id
-          ) m ON m.viatura_id=r.viatura_id AND datetime(r.data_hora)=m.ult
+          ) m ON m.viatura_id=r.viatura_id AND r.data_hora=m.ult
         ),
         verificados AS (
           SELECT viatura_id, COUNT(*) AS n
@@ -2035,7 +2095,7 @@ def viaturas():
                 v[f"freq_inspecao_{ins_key}"] = None
                 continue
             cur.execute(f"""
-                SELECT MAX(date(r.data_hora)) as ult
+                SELECT MAX({sql_date_expr('r.data_hora')}) as ult
                 FROM registos_limpeza r
                 WHERE r.viatura_id={ph} AND r.protocolo_id={ph}
             """, (v["id"], prot["id"]))
@@ -2049,7 +2109,7 @@ def viaturas():
 
             # Dias desde a última inspeção (verificação registada pelo gestor)
             cur.execute(f"""
-                SELECT MAX(date(COALESCE(r.verificacao_em, r.data_hora))) as ult
+                SELECT MAX({sql_date_expr('COALESCE(r.verificacao_em, r.data_hora)')}) as ult
                 FROM registos_limpeza r
                 WHERE r.viatura_id={ph}
                   AND r.protocolo_id={ph}
@@ -2809,14 +2869,14 @@ def novo_registo():
         cur.execute("SELECT id, nome, passos_json, frequencia_dias FROM protocolos WHERE ativo=1 ORDER BY nome")
         ps = [dict(row) for row in cur.fetchall()]
         hoje_val = today_pt_iso()
-        cur.execute("SELECT DISTINCT viatura_id FROM registos_limpeza WHERE date(data_hora) = ?", (hoje_val,))
+        cur.execute("SELECT DISTINCT viatura_id FROM registos_limpeza WHERE substr(data_hora, 1, 10) = ?", (hoje_val,))
         limpas_hoje = {r["viatura_id"] for r in cur.fetchall()}
         cur.execute("SELECT id, nome FROM funcionarios WHERE role='gestor' AND ativo=1")
         gestores = [dict(row) for row in cur.fetchall()]
         # Viaturas autorizadas a limpeza extra hoje
         cur.execute("""
             SELECT viatura_id FROM pedidos_autorizacao
-            WHERE validado=1 AND date(data_pedido)=?
+            WHERE validado=1 AND substr(data_pedido, 1, 10)=?
         """, (hoje_val,))
         viaturas_autorizadas = {r["viatura_id"] for r in cur.fetchall()}
         conn.close()
@@ -2870,7 +2930,7 @@ def novo_registo():
     # Verifica se já foi limpa hoje
     cur.execute("""
         SELECT COUNT(*) FROM registos_limpeza
-        WHERE viatura_id = ? AND date(data_hora) = ?
+        WHERE viatura_id = ? AND substr(data_hora, 1, 10) = ?
     """, (viatura_id, hoje_val))
     ja_limpo_hoje = first_col(cur.fetchone(), 0) > 0
 
@@ -2882,7 +2942,7 @@ def novo_registo():
             SELECT f.nome
             FROM pedidos_autorizacao pa
             JOIN funcionarios f ON f.id = pa.destinatario_id
-            WHERE pa.viatura_id=? AND pa.funcionario_id=? AND pa.validado=1 AND date(pa.data_pedido)=?
+            WHERE pa.viatura_id=? AND pa.funcionario_id=? AND pa.validado=1 AND substr(pa.data_pedido, 1, 10)=?
             ORDER BY pa.data_pedido DESC LIMIT 1
         """, (viatura_id, funcionario_id, hoje_val))
         row = cur.fetchone()
@@ -2914,13 +2974,13 @@ def novo_registo():
         vs = [dict(row) for row in cur.fetchall()]
         cur.execute("SELECT id, nome FROM protocolos WHERE ativo=1 ORDER BY nome")
         ps = [dict(row) for row in cur.fetchall()]
-        cur.execute("SELECT DISTINCT viatura_id FROM registos_limpeza WHERE date(data_hora) = ?", (hoje_val,))
+        cur.execute("SELECT DISTINCT viatura_id FROM registos_limpeza WHERE substr(data_hora, 1, 10) = ?", (hoje_val,))
         limpas_hoje = {r["viatura_id"] for r in cur.fetchall()}
         cur.execute("SELECT id, nome FROM funcionarios WHERE role='gestor' AND ativo=1")
         gestores = [dict(row) for row in cur.fetchall()]
         cur.execute("""
             SELECT viatura_id FROM pedidos_autorizacao
-            WHERE validado=1 AND date(data_pedido)=?
+            WHERE validado=1 AND substr(data_pedido, 1, 10)=?
         """, (hoje_val,))
         viaturas_autorizadas = {r["viatura_id"] for r in cur.fetchall()}
         conn.close()
@@ -2990,7 +3050,7 @@ def novo_registo():
     if pedido_autorizado:
         cur.execute("""
             DELETE FROM pedidos_autorizacao
-            WHERE viatura_id=? AND funcionario_id=? AND validado=1 AND date(data_pedido)=?
+            WHERE viatura_id=? AND funcionario_id=? AND validado=1 AND substr(data_pedido, 1, 10)=?
         """, (viatura_id, funcionario_id, hoje_val))
     conn.commit()
     conn.close()
@@ -3002,7 +3062,7 @@ def pedido_autorizado_hoje(viatura_id, funcionario_id):
     cur = conn.cursor()
     cur.execute("""
         SELECT 1 FROM pedidos_autorizacao
-         WHERE viatura_id=? AND funcionario_id=? AND validado=1 AND date(data_pedido)=?
+         WHERE viatura_id=? AND funcionario_id=? AND validado=1 AND substr(data_pedido, 1, 10)=?
     """, (viatura_id, funcionario_id, today_pt_iso()))
     res = cur.fetchone()
     conn.close()
@@ -3022,7 +3082,7 @@ def registos_em_progresso():
         JOIN protocolos p ON p.id = r.protocolo_id
         JOIN funcionarios f ON f.id = r.funcionario_id
         WHERE r.estado='em_progresso' AND (r.hora_fim IS NULL OR r.hora_fim='')
-        ORDER BY datetime(r.data_hora) DESC, r.id DESC
+        ORDER BY r.data_hora DESC, r.id DESC
     """)
     registos = [dict(row) for row in cur.fetchall()]
     conn.close()
@@ -3129,7 +3189,7 @@ def exportar_contabilidade_excel():
     conn = get_conn()
     cur = conn.cursor()
     sql = """
-        SELECT date(r.data_hora) as data, v.matricula, v.num_frota, v.regiao, p.nome as protocolo, p.custo_limpeza, f.nome as funcionario, f.empresa, r.local
+        SELECT substr(r.data_hora, 1, 10) as data, v.matricula, v.num_frota, v.regiao, p.nome as protocolo, p.custo_limpeza, f.nome as funcionario, f.empresa, r.local
         FROM registos_limpeza r
         JOIN viaturas v ON v.id = r.viatura_id
         JOIN protocolos p ON p.id = r.protocolo_id
@@ -3138,7 +3198,7 @@ def exportar_contabilidade_excel():
     """
     params = []
     if mes:
-        sql += " AND strftime('%Y-%m', r.data_hora) = ?"
+        sql += " AND substr(r.data_hora, 1, 7) = ?"
         params.append(mes)
     if protocolo_id:
         sql += " AND p.id = ?"
@@ -3150,7 +3210,7 @@ def exportar_contabilidade_excel():
         sql += " AND f.empresa = ?"
         params.append(empresa) 
 
-    sql += " ORDER BY v.regiao ASC, date(r.data_hora) ASC, r.id ASC"
+    sql += " ORDER BY v.regiao ASC, r.data_hora ASC, r.id ASC"
     df = pd.read_sql_query(sql, conn, params=params)
     conn.close()
 
@@ -3549,7 +3609,7 @@ def contabilidade():
     conn = get_conn()
     cur = conn.cursor()
     sql = """
-        SELECT r.id as registo_id, date(r.data_hora) as data, 
+        SELECT r.id as registo_id, substr(r.data_hora, 1, 10) as data, 
                COALESCE(r.regiao, v.regiao) as regiao, 
                v.matricula, v.num_frota,
                p.nome as protocolo, p.custo_limpeza, f.nome as funcionario, f.empresa, r.local
@@ -3561,7 +3621,7 @@ def contabilidade():
     """
     params = []
     if mes:
-        sql += " AND strftime('%Y-%m', r.data_hora) = ?"
+        sql += " AND substr(r.data_hora, 1, 7) = ?"
         params.append(mes)
     if protocolo_id:
         sql += " AND p.id = ?"
@@ -3572,7 +3632,7 @@ def contabilidade():
     if empresa:
         sql += " AND f.empresa = ?"
         params.append(empresa)
-    sql += " ORDER BY regiao ASC, datetime(r.data_hora) ASC, r.id ASC"
+    sql += " ORDER BY regiao ASC, r.data_hora ASC, r.id ASC"
     cur.execute(sql, params)
     registos = [dict(row) for row in cur.fetchall()]
 
@@ -3645,7 +3705,7 @@ def registos():
     """
     params = []
     if mes:
-        sql += " AND strftime('%Y-%m', r.data_hora) = ?"
+        sql += " AND substr(r.data_hora, 1, 7) = ?"
         params.append(mes)
     if regiao_user:
         sql += " AND v.regiao = ?"
@@ -3654,7 +3714,7 @@ def registos():
         placeholders = ",".join(["?"] * len(desc_list_user))
         sql += f" AND COALESCE(v.descricao,'') IN ({placeholders})"
         params.extend(desc_list_user)
-    sql += " ORDER BY v.regiao ASC, datetime(r.data_hora) ASC, r.id ASC"
+    sql += " ORDER BY v.regiao ASC, r.data_hora ASC, r.id ASC"
     cur.execute(sql, params)
     registos = [dict(row) for row in cur.fetchall()]
     conn.close()
@@ -3721,7 +3781,7 @@ def export_excel():
     """
     params = []
     if mes:
-        sql += " AND strftime('%Y-%m', r.data_hora) = ?"
+        sql += " AND substr(r.data_hora, 1, 7) = ?"
         params.append(mes)
     if regiao_user and user_role != "admin":
         sql += " AND v.regiao = ?"
@@ -3730,7 +3790,7 @@ def export_excel():
         placeholders = ",".join(["?"] * len(desc_list_user))
         sql += f" AND COALESCE(v.descricao,'') IN ({placeholders})"
         params.extend(desc_list_user)
-    sql += " ORDER BY datetime(r.data_hora) DESC, r.id DESC"
+    sql += " ORDER BY r.data_hora DESC, r.id DESC"
     df = pd.read_sql_query(sql, conn, params=params)
     conn.close()
      
@@ -3850,7 +3910,7 @@ def export_registos_excel():
     """
     params = []
     if mes:
-        sql += " AND strftime('%Y-%m', r.data_hora) = ?"
+        sql += " AND substr(r.data_hora, 1, 7) = ?"
         params.append(mes)
     if regiao_user and user_role != "admin":
         sql += " AND v.regiao = ?"
@@ -3859,7 +3919,7 @@ def export_registos_excel():
         placeholders = ",".join(["?"] * len(desc_list_user))
         sql += f" AND COALESCE(v.descricao,'') IN ({placeholders})"
         params.extend(desc_list_user)
-    sql += " ORDER BY datetime(r.data_hora) DESC, r.id DESC"
+    sql += " ORDER BY r.data_hora DESC, r.id DESC"
     df = pd.read_sql_query(sql, conn, params=params)
     conn.close()
 
