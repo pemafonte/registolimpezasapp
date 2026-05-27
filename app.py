@@ -695,13 +695,57 @@ def get_conn():
     db_url = os.environ.get("DATABASE_URL")
     if db_url and psycopg2:
         # Heroku/PostgreSQL
-        conn = psycopg2.connect(db_url, cursor_factory=psycopg2.extras.RealDictCursor)
+        conn = psycopg2.connect(db_url, cursor_factory=CompatRealDictCursor)
         return conn
     else:
         # Local/SQLite
         conn = sqlite3.connect(DB_PATH)
         conn.row_factory = sqlite3.Row
         return conn
+
+def qmark_to_postgres(sql: str) -> str:
+    """
+    Converte placeholders SQLite (?) para PostgreSQL (%s),
+    ignorando interrogações dentro de strings SQL.
+    """
+    out = []
+    in_single = False
+    in_double = False
+    i = 0
+    while i < len(sql):
+        ch = sql[i]
+        if ch == "'" and not in_double:
+            # Trata escaped quote em SQL: ''
+            if in_single and i + 1 < len(sql) and sql[i + 1] == "'":
+                out.append("''")
+                i += 2
+                continue
+            in_single = not in_single
+            out.append(ch)
+            i += 1
+            continue
+        if ch == '"' and not in_single:
+            in_double = not in_double
+            out.append(ch)
+            i += 1
+            continue
+        if ch == "?" and not in_single and not in_double:
+            out.append("%s")
+        else:
+            out.append(ch)
+        i += 1
+    return "".join(out)
+
+class CompatRealDictCursor(psycopg2.extras.RealDictCursor if psycopg2 else object):
+    def execute(self, query, vars=None):
+        if isinstance(query, str) and "?" in query:
+            query = qmark_to_postgres(query)
+        return super().execute(query, vars)
+
+    def executemany(self, query, vars_list):
+        if isinstance(query, str) and "?" in query:
+            query = qmark_to_postgres(query)
+        return super().executemany(query, vars_list)
 
 def is_postgres(conn):
     return hasattr(conn, "server_version")  # True para psycopg2, False para sqlite3
@@ -1667,7 +1711,7 @@ def home():
     """
     viaturas_proto_params = [dt_today_param]
     if regiao_gestor:
-        viaturas_proto_sql += " AND v.regiao = ?"
+        viaturas_proto_sql += f" AND v.regiao = {ph}"
         viaturas_proto_params.append(regiao_gestor)
     viaturas_proto_sql += " ORDER BY p.nome, v.matricula"
     cur.execute(viaturas_proto_sql, viaturas_proto_params)
@@ -2099,7 +2143,7 @@ def gestor_verificacoes():
     ph = sql_placeholder(conn)
 
     # Região do gestor
-    cur.execute("SELECT regiao FROM funcionarios WHERE id=?", (session.get("user_id"),))
+    cur.execute(f"SELECT regiao FROM funcionarios WHERE id={ph}", (session.get("user_id"),))
     row = cur.fetchone()
     regiao_gestor = (row["regiao"] or "").strip() if row else None
 
