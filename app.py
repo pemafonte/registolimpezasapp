@@ -29,6 +29,7 @@ TEMPLATES_DIR = BASE_DIR / "templates"
 OVERWRITE_TEMPLATES = False
 APP_TITLE = "Registo Limpezas de Viaturas Grupo Tejo"
 APP_SIGNATURE = "Created by Pedro Fonte"
+APP_BUILD = "2026-05-27-inspecao-viaturas"
 
 ALLOWED_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".pdf"}
 
@@ -117,79 +118,70 @@ def normalize_pg_url(url: str) -> str:
     return url
 
 
-def _gestor_ultimos_registos_verificacao(cur, ph, regiao_gestor: str | None, *, apenas_pendentes: bool):
-    """Último registo concluído por viatura+protocolo, filtrado por região e estado de verificação."""
-    where = ["r.estado='concluido'"]
-    params: list[str] = []
+def _gestor_viaturas_para_inspecao(cur, ph, regiao_gestor: str | None):
+    """Todas as viaturas ativas da região do gestor (inspeção independente de protocolos)."""
+    where = ["v.ativo = 1"]
+    params: list = []
     if regiao_gestor:
-        where.append(f"v.regiao = {ph}")
+        where.append(f"COALESCE(v.regiao,'') = {ph}")
         params.append(regiao_gestor)
-    if apenas_pendentes:
-        where.append("(r.verificacao_limpeza IS NULL OR TRIM(r.verificacao_limpeza)='')")
-    else:
-        where.append("(r.verificacao_limpeza IS NOT NULL AND TRIM(r.verificacao_limpeza)<>'')")
-
-    subquery = f"""
-        SELECT r.viatura_id, r.protocolo_id, MAX(r.data_hora) AS ult
-        FROM registos_limpeza r
-        JOIN viaturas v ON v.id = r.viatura_id
-        WHERE {" AND ".join(where)}
-        GROUP BY r.viatura_id, r.protocolo_id
-    """
     cur.execute(
         f"""
-        WITH base AS (
-            {subquery}
-        )
         SELECT
-            r.id AS registo_id,
+            v.id AS viatura_id,
             v.matricula,
             v.num_frota,
             v.descricao,
-            p.nome AS protocolo_nome,
-            r.data_hora,
-            r.local,
-            r.verificacao_limpeza,
-            r.comentarios_verificacao,
-            r.verificacao_em
-        FROM registos_limpeza r
-        JOIN base b
-          ON b.viatura_id = r.viatura_id
-         AND b.protocolo_id = r.protocolo_id
-         AND b.ult = r.data_hora
-        JOIN viaturas v ON v.id = r.viatura_id
-        JOIN protocolos p ON p.id = r.protocolo_id
-        ORDER BY p.nome, v.matricula
+            v.regiao,
+            v.verificacao_limpeza,
+            v.comentarios_verificacao,
+            v.verificacao_em
+        FROM viaturas v
+        WHERE {" AND ".join(where)}
+        ORDER BY v.matricula
         """,
         params,
     )
     return [dict(x) for x in cur.fetchall()]
 
 
-def _processar_verificacoes_gestor(cur, ph, selected_ids: list[str]) -> list[str]:
+def _processar_inspecoes_viaturas_gestor(
+    cur, ph, selected_ids: list[str], regiao_gestor: str | None
+) -> list[str]:
     erros: list[str] = []
-    for rid_str in selected_ids:
+    for vid_str in selected_ids:
         try:
-            rid = int(rid_str)
+            vid = int(vid_str)
         except (TypeError, ValueError):
             continue
-        status = (request.form.get(f"status_{rid_str}") or "").strip()
-        comentario = (request.form.get(f"coment_{rid_str}") or "").strip()
+        status = (request.form.get(f"status_{vid_str}") or "").strip()
+        comentario = (request.form.get(f"coment_{vid_str}") or "").strip()
         if not status:
-            erros.append(f"Registo {rid}: falta o estado da verificação.")
+            erros.append(f"Viatura {vid}: indique se está limpa ou suja.")
             continue
         status_l = status.lower()
-        if status_l in {"não conforme", "nao conforme"} and not comentario:
-            erros.append(f"Registo {rid}: comentário obrigatório para 'não conforme'.")
+        if status_l == "suja" and not comentario:
+            erros.append(f"Viatura {vid}: comentário obrigatório quando a viatura está suja.")
             continue
-        comentarios_to_save = comentario if status_l in {"não conforme", "nao conforme"} else None
+        comentarios_to_save = comentario if status_l == "suja" else None
+
+        scope_sql = f"SELECT id FROM viaturas WHERE id={ph} AND ativo=1"
+        scope_params: list = [vid]
+        if regiao_gestor:
+            scope_sql += f" AND COALESCE(regiao,'')={ph}"
+            scope_params.append(regiao_gestor)
+        cur.execute(scope_sql, scope_params)
+        if not cur.fetchone():
+            erros.append(f"Viatura {vid}: não encontrada ou fora da sua região.")
+            continue
+
         cur.execute(
-            f"""UPDATE registos_limpeza
+            f"""UPDATE viaturas
                 SET verificacao_limpeza={ph},
                     comentarios_verificacao={ph},
                     verificacao_em={ph}
                 WHERE id={ph}""",
-            (status, comentarios_to_save, now_pt_iso(), rid),
+            (status, comentarios_to_save, now_pt_iso(), vid),
         )
     return erros
 
@@ -963,6 +955,7 @@ def inject_can():
         "can": user_can,
         "signature": APP_SIGNATURE,
         "app_title": APP_TITLE,
+        "app_build": APP_BUILD,
     }
 
 def ensure_custo_limpeza_in_protocolos():
@@ -1315,6 +1308,22 @@ def ensure_verificacao_em_in_registos_limpeza():
 
 ensure_verificacao_em_in_registos_limpeza()
 
+
+def ensure_viatura_inspecao_columns():
+    conn = get_conn()
+    cur = conn.cursor()
+    cols = table_columns(conn, "viaturas")
+    if "comentarios_verificacao" not in cols:
+        cur.execute("ALTER TABLE viaturas ADD COLUMN comentarios_verificacao TEXT")
+    if "verificacao_em" not in cols:
+        cur.execute("ALTER TABLE viaturas ADD COLUMN verificacao_em TEXT")
+    conn.commit()
+    conn.close()
+
+
+ensure_viatura_inspecao_columns()
+
+
 def ensure_empresa_in_funcionarios():
     conn = get_conn()
     cur = conn.cursor()
@@ -1377,6 +1386,11 @@ def login():
         flash("Credenciais inválidas.", "danger")
 
     return render_template("login.html", signature=APP_SIGNATURE)
+
+@app.route("/version")
+def app_version():
+    return {"build": APP_BUILD, "db": "postgresql" if database_url() else "sqlite"}
+
 
 @app.route("/logout")
 def logout():
@@ -2006,6 +2020,7 @@ def viaturas():
     f_tipo = (request.args.get("tipo_protocolo") or "").strip()
     f_ativo = (request.args.get("ativo") or "").strip()
     f_filial = (request.args.get("filial") or "").strip()
+    f_descricao = (request.args.get("descricao") or "").strip()
     f_desc_list: list[str] = []
     regiao_user = None
 
@@ -2090,6 +2105,8 @@ def viaturas():
         where.append(f"v.ativo = {ph}"); params.append(int(f_ativo))
     if f_filial:
         where.append(f"COALESCE(v.filial,'') = {ph}"); params.append(f_filial)
+    if f_descricao:
+        where.append(f"COALESCE(v.descricao,'') = {ph}"); params.append(f_descricao)
 
     cur.execute(f"""
         WITH last AS (
@@ -2109,6 +2126,7 @@ def viaturas():
         SELECT v.id, v.matricula, v.descricao, v.filial,
                {num_frota_expr} AS num_frota,
                v.regiao, v.operacao, v.marca, v.modelo, v.tipo_protocolo, v.ativo,
+               v.verificacao_limpeza, v.comentarios_verificacao, v.verificacao_em,
                l.local AS ultima_local, l.hora_inicio, l.hora_fim,
                f.username AS ultima_user
         FROM viaturas v
@@ -2122,28 +2140,6 @@ def viaturas():
     
     cur.execute("SELECT id, nome, frequencia_dias FROM protocolos WHERE UPPER(nome) IN ('PROTOCOLO B', 'PROTOCOLO C')")
     protocolos_bc = {r["nome"].upper(): dict(r) for r in cur.fetchall()}
-
-    # Última inspeção (verificação do gestor) por viatura, independente de protocolo
-    cur.execute("""
-        SELECT
-            r.viatura_id,
-            r.verificacao_limpeza,
-            r.comentarios_verificacao,
-            COALESCE(r.verificacao_em, r.data_hora) AS verif_data
-        FROM registos_limpeza r
-        WHERE r.verificacao_limpeza IS NOT NULL
-          AND TRIM(r.verificacao_limpeza) <> ''
-        ORDER BY r.viatura_id, COALESCE(r.verificacao_em, r.data_hora) DESC, r.id DESC
-    """)
-    last_inspecao_by_viatura = {}
-    for row in cur.fetchall():
-        vid = row["viatura_id"]
-        if vid not in last_inspecao_by_viatura:
-            last_inspecao_by_viatura[vid] = {
-                "status": row["verificacao_limpeza"],
-                "comentarios": row["comentarios_verificacao"],
-                "data": row["verif_data"],
-            }
 
     hoje = today_pt()
     for v in vs:
@@ -2174,20 +2170,20 @@ def viaturas():
             if dias is not None and prot["frequencia_dias"] is not None and dias > prot["frequencia_dias"]:
                 v["tem_atraso"] = True
 
-        # Inspeção independente de protocolo (última verificação do gestor)
-        info_inspecao = last_inspecao_by_viatura.get(v["id"])
-        if info_inspecao and info_inspecao.get("data"):
+        # Inspeção do gestor (guardada na viatura, independente de protocolos)
+        verif_em = (v.get("verificacao_em") or "").strip()
+        if verif_em:
             try:
-                dias_desde = (hoje - datetime.fromisoformat(info_inspecao["data"]).date()).days
+                dias_desde = (hoje - datetime.fromisoformat(verif_em[:10]).date()).days
             except Exception:
                 dias_desde = None
-            v["inspecao_verificada"] = info_inspecao.get("status")
+            v["inspecao_verificada"] = v.get("verificacao_limpeza")
             v["inspecao_dias"] = dias_desde
-            v["inspecao_comentarios"] = info_inspecao.get("comentarios")
+            v["inspecao_comentarios"] = v.get("comentarios_verificacao")
         else:
-            v["inspecao_verificada"] = None
+            v["inspecao_verificada"] = v.get("verificacao_limpeza") or None
             v["inspecao_dias"] = None
-            v["inspecao_comentarios"] = None
+            v["inspecao_comentarios"] = v.get("comentarios_verificacao")
 
     # Ordenar: primeiro as viaturas com atraso, depois as restantes
     vs = sorted(vs, key=lambda v: (not v["tem_atraso"], v["matricula"]))
@@ -2203,6 +2199,7 @@ def viaturas():
         "modelo": _opts("modelo"),
         "tipo_protocolo": _opts("tipo_protocolo"),
         "filial": _opts("filial"),
+        "descricao": _opts("descricao"),
     }
 
     conn.close()
@@ -2269,13 +2266,13 @@ def gestor_verificacoes():
     regiao_gestor = (row["regiao"] or "").strip() if row else None
 
     if request.method == "POST":
-        selected = request.form.getlist("registos")
+        selected = request.form.getlist("viaturas")
         if not selected:
-            flash("Selecione pelo menos um registo para inspecionar ou alterar.", "warning")
+            flash("Selecione pelo menos uma viatura para inspecionar ou alterar.", "warning")
             conn.close()
             return redirect(url_for("gestor_verificacoes"))
 
-        erros = _processar_verificacoes_gestor(cur, ph, selected)
+        erros = _processar_inspecoes_viaturas_gestor(cur, ph, selected, regiao_gestor)
         if erros:
             conn.rollback()
             conn.close()
@@ -2284,17 +2281,16 @@ def gestor_verificacoes():
 
         conn.commit()
         conn.close()
-        flash("Verificações registadas/atualizadas com sucesso.", "success")
+        flash("Inspeções registadas/atualizadas com sucesso.", "success")
         return redirect(url_for("gestor_verificacoes"))
 
-    pendentes = _gestor_ultimos_registos_verificacao(cur, ph, regiao_gestor, apenas_pendentes=True)
-    verificados = _gestor_ultimos_registos_verificacao(cur, ph, regiao_gestor, apenas_pendentes=False)
+    viaturas_inspecao = _gestor_viaturas_para_inspecao(cur, ph, regiao_gestor)
     conn.close()
 
     return render_template(
         "gestor_verificacoes.html",
-        pendentes=pendentes,
-        verificados=verificados,
+        viaturas=viaturas_inspecao,
+        regiao_gestor=regiao_gestor,
         signature=APP_SIGNATURE,
     )
 

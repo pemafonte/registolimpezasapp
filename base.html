@@ -86,7 +86,7 @@
     {% block content %}{% endblock %}
   </main>
   <footer class="app-footer">
-    {{ signature or 'Created by Pedro Fonte' }}
+    {{ signature or 'Created by Pedro Fonte' }}{% if app_build %} · {{ app_build }}{% endif %}
   </footer>
 </body>
 </html>

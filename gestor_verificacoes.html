@@ -1,111 +1,73 @@
 {% extends "base.html" %}
 {% block content %}
-  <h2>Verificações de Limpeza (Gestor)</h2>
+  <h2>Inspeção de Viaturas (Gestor)</h2>
   <p class="muted" style="margin-bottom:1rem;">
-    Inspecione registos pendentes ou altere verificações já registadas (último registo por viatura e protocolo).
+    Selecione uma ou mais viaturas da sua região{% if regiao_gestor %} ({{ regiao_gestor }}){% endif %}
+    e indique se estão <strong>limpas</strong> ou <strong>sujas</strong>. A inspeção é independente dos protocolos de limpeza.
   </p>
 
-  {% macro verif_row(it, checked, show_verif_em) %}
-    {% set rid = it.registo_id %}
-    {% set sk = (it.verificacao_limpeza or '')|lower %}
-    <tr>
-      <td>
-        <input type="checkbox" name="registos" value="{{ rid }}"{% if checked %} checked{% endif %}>
-      </td>
-      <td><b>{{ it.matricula }}</b></td>
-      <td>{{ it.num_frota or "" }}{% if it.descricao %} — {{ it.descricao }}{% endif %}</td>
-      <td>{{ it.protocolo_nome }}</td>
-      <td>{{ it.data_hora }}</td>
-      {% if show_verif_em %}
-        <td>{{ it.verificacao_em or '—' }}</td>
-      {% endif %}
-      <td>
-        <select name="status_{{ rid }}" id="status_{{ rid }}" onchange="toggleComent({{ rid }})">
-          <option value="verificada"{% if sk == 'verificada' %} selected{% endif %}>Verificada</option>
-          <option value="conforme"{% if sk == 'conforme' %} selected{% endif %}>Conforme</option>
-          <option value="não conforme"{% if sk in ['não conforme', 'nao conforme'] %} selected{% endif %}>Não conforme</option>
-        </select>
-      </td>
-      <td>
-        <textarea
-          name="coment_{{ rid }}"
-          id="coment_{{ rid }}"
-          rows="3"
-          style="width:100%;{% if sk not in ['não conforme', 'nao conforme'] %}display:none;{% endif %}"
-          placeholder="Descreva o facto não conforme...">{{ it.comentarios_verificacao or '' }}</textarea>
-      </td>
-    </tr>
-  {% endmacro %}
-
-  {% if not pendentes and not verificados %}
-    <div class="muted">Não existem registos concluídos na sua região.</div>
+  {% if not viaturas %}
+    <div class="muted">Não existem viaturas ativas na sua região.</div>
   {% else %}
     <form method="post">
-      {% if pendentes %}
-        <h3 style="margin-top:0;">Pendentes de verificação</h3>
-        <table style="width:100%;border-collapse:collapse;margin-bottom:2rem;">
-          <thead>
+      <table style="width:100%;border-collapse:collapse;">
+        <thead>
+          <tr>
+            <th>Inspecionar</th>
+            <th>Matrícula</th>
+            <th>Nº frota / Descrição</th>
+            <th>Região</th>
+            <th>Última inspeção</th>
+            <th>Estado</th>
+            <th>Comentário</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for it in viaturas %}
+            {% set vid = it.viatura_id %}
+            {% set sk = (it.verificacao_limpeza or '')|lower %}
             <tr>
-              <th>Inspecionar</th>
-              <th>Matrícula</th>
-              <th>Viatura</th>
-              <th>Protocolo</th>
-              <th>Data/Hora limpeza</th>
-              <th>Estado</th>
-              <th>Comentário</th>
+              <td>
+                <input type="checkbox" name="viaturas" value="{{ vid }}">
+              </td>
+              <td><b>{{ it.matricula }}</b></td>
+              <td>{{ it.num_frota or "" }}{% if it.descricao %} — {{ it.descricao }}{% endif %}</td>
+              <td>{{ it.regiao or "—" }}</td>
+              <td>{{ it.verificacao_em or "—" }}</td>
+              <td>
+                <select name="status_{{ vid }}" id="status_{{ vid }}" onchange="toggleComent({{ vid }})">
+                  <option value="">— escolher —</option>
+                  <option value="limpa"{% if sk == 'limpa' %} selected{% endif %}>Limpa</option>
+                  <option value="suja"{% if sk == 'suja' %} selected{% endif %}>Suja</option>
+                </select>
+              </td>
+              <td>
+                <textarea
+                  name="coment_{{ vid }}"
+                  id="coment_{{ vid }}"
+                  rows="2"
+                  style="width:100%;{% if sk != 'suja' %}display:none;{% endif %}"
+                  placeholder="Descreva o motivo (obrigatório se suja)...">{{ it.comentarios_verificacao or '' }}</textarea>
+              </td>
             </tr>
-          </thead>
-          <tbody>
-            {% for it in pendentes %}
-              {{ verif_row(it, true, false) }}
-            {% endfor %}
-          </tbody>
-        </table>
-      {% else %}
-        <p class="muted">Não há registos pendentes de verificação.</p>
-      {% endif %}
-
-      {% if verificados %}
-        <h3>Já verificados — alterar / reenviar</h3>
-        <p class="muted" style="margin-bottom:0.5rem;">
-          Marque as linhas que pretende atualizar. A data de verificação será renovada ao guardar.
-        </p>
-        <table style="width:100%;border-collapse:collapse;">
-          <thead>
-            <tr>
-              <th>Alterar</th>
-              <th>Matrícula</th>
-              <th>Viatura</th>
-              <th>Protocolo</th>
-              <th>Data/Hora limpeza</th>
-              <th>Verificado em</th>
-              <th>Estado</th>
-              <th>Comentário</th>
-            </tr>
-          </thead>
-          <tbody>
-            {% for it in verificados %}
-              {{ verif_row(it, false, true) }}
-            {% endfor %}
-          </tbody>
-        </table>
-      {% endif %}
-
+          {% endfor %}
+        </tbody>
+      </table>
       <div style="margin-top:1rem;display:flex;gap:10px;align-items:center;">
-        <button class="btn btn-primary" type="submit">Guardar verificações</button>
+        <button class="btn btn-primary" type="submit">Guardar inspeções</button>
         <a class="btn" href="{{ url_for('home') }}">Cancelar</a>
       </div>
     </form>
     <script>
-      function toggleComent(registoId) {
-        const sel = document.getElementById('status_' + registoId);
-        const box = document.getElementById('coment_' + registoId);
+      function toggleComent(viaturaId) {
+        const sel = document.getElementById('status_' + viaturaId);
+        const box = document.getElementById('coment_' + viaturaId);
         if (!sel || !box) return;
-        box.style.display = (sel.value === 'não conforme') ? '' : 'none';
+        box.style.display = (sel.value === 'suja') ? '' : 'none';
       }
       document.addEventListener('DOMContentLoaded', () => {
-        {% for it in pendentes + verificados %}
-          toggleComent({{ it.registo_id }});
+        {% for it in viaturas %}
+          toggleComent({{ it.viatura_id }});
         {% endfor %}
       });
     </script>
