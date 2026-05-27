@@ -1626,7 +1626,7 @@ def home():
     """
     params_proto = []
     sql_proto, params_proto = filtro_mes_regiao(sql_proto, params_proto)
-    sql_proto += " GROUP BY r.protocolo_id ORDER BY p.nome"
+    sql_proto += " GROUP BY r.protocolo_id, p.nome ORDER BY p.nome"
     cur.execute(sql_proto, params_proto)
     chart_proto = [(r["label"], r["qty"]) for r in cur.fetchall()]
 
