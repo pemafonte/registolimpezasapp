@@ -61,6 +61,31 @@ def parse_descricao_viaturas(value: str | None) -> list[str]:
     parts = re.split(r"[;,]", value or "")
     return [p.strip() for p in parts if p and p.strip()]
 
+def load_user_scope(cur, user_id):
+    cur.execute("SELECT regiao, descricao_viaturas FROM funcionarios WHERE id=?", (user_id,))
+    row = cur.fetchone()
+    regiao = (row["regiao"] or "").strip() if row and "regiao" in row.keys() and row["regiao"] else None
+    descricao_user = (row["descricao_viaturas"] or "").strip() if row and "descricao_viaturas" in row.keys() and row["descricao_viaturas"] else ""
+    desc_list = parse_descricao_viaturas(descricao_user)
+    return regiao, desc_list
+
+
+def apply_operator_scope_sql(sql: str, params: list, regiao: str | None, desc_list: list[str], *,
+                             regiao_col: str, descricao_col: str) -> tuple[str, list]:
+    if regiao and desc_list:
+        placeholders = ",".join(["?"] * len(desc_list))
+        sql += f" AND ({regiao_col} = ? OR COALESCE({descricao_col},'') IN ({placeholders}))"
+        params.append(regiao)
+        params.extend(desc_list)
+    elif regiao:
+        sql += f" AND {regiao_col} = ?"
+        params.append(regiao)
+    elif desc_list:
+        placeholders = ",".join(["?"] * len(desc_list))
+        sql += f" AND COALESCE({descricao_col},'') IN ({placeholders})"
+        params.extend(desc_list)
+    return sql, params
+
 
 def sql_date_expr(col: str) -> str:
     """YYYY-MM-DD a partir de data_hora em texto ISO (SQLite e PostgreSQL)."""
@@ -1420,19 +1445,19 @@ def home():
     regiao_user = None
     desc_list_user: list[str] = []
     if user_role in ("gestor", "operador"):
-        cur.execute(f"SELECT regiao, descricao_viaturas FROM funcionarios WHERE id={ph}", (user_id,))
-        row = cur.fetchone()
-        regiao_user = (row["regiao"] or "").strip() if row and row["regiao"] else None
-        if regiao_user:
+        regiao_user, desc_list_user = load_user_scope(cur, user_id)
+        if user_role == "operador":
+            viaturas_sql, viaturas_params = apply_operator_scope_sql(
+                viaturas_sql,
+                viaturas_params,
+                regiao_user,
+                desc_list_user,
+                regiao_col="regiao",
+                descricao_col="descricao",
+            )
+        elif regiao_user:
             viaturas_sql += f" AND regiao = {ph}"
             viaturas_params.append(regiao_user)
-        elif user_role == "operador":
-            descricao_user = (row["descricao_viaturas"] or "").strip() if row and row["descricao_viaturas"] else ""
-            desc_list_user = parse_descricao_viaturas(descricao_user)
-            if desc_list_user:
-                placeholders = ",".join([ph] * len(desc_list_user))
-                viaturas_sql += f" AND COALESCE(descricao,'') IN ({placeholders})"
-                viaturas_params.extend(desc_list_user)
     viaturas_sql += " ORDER BY filial, matricula"
     cur.execute(viaturas_sql, viaturas_params)
     viaturas = [dict(r) for r in cur.fetchall()]
@@ -1472,7 +1497,16 @@ def home():
         WHERE v.ativo=1
     """
     last_any_params = []
-    if user_role in ("gestor", "operador") and regiao_user:
+    if user_role == "operador":
+        last_any_sql, last_any_params = apply_operator_scope_sql(
+            last_any_sql,
+            last_any_params,
+            regiao_user,
+            desc_list_user,
+            regiao_col="v.regiao",
+            descricao_col="v.descricao",
+        )
+    elif user_role == "gestor" and regiao_user:
         last_any_sql += f" AND v.regiao = {ph}"
         last_any_params.append(regiao_user)
     last_any_sql += " GROUP BY v.id"
@@ -1881,30 +1915,34 @@ def exportar_viaturas_csv():
 
     # Restrições de acesso pelo perfil
     if session.get("role") in ("gestor", "operador"):
-        cur.execute(
-            f"SELECT regiao, descricao_viaturas FROM funcionarios WHERE id={ph}",
-            (session.get("user_id"),),
-        )
-        row = cur.fetchone()
-        regiao_user = (row["regiao"] or "").strip() if row else ""
-        if regiao_user:
+        regiao_user, access_desc_list = load_user_scope(cur, session.get("user_id"))
+        if session.get("role") == "gestor" and regiao_user:
             f_regiao = regiao_user
-        elif session.get("role") == "operador":
-            descricao_user = (row["descricao_viaturas"] or "").strip() if row and row["descricao_viaturas"] else ""
-            access_desc_list = parse_descricao_viaturas(descricao_user)
     if q_matricula:
         where.append(f"v.matricula LIKE {ph}")
         params.append(f"%{q_matricula}%")
     if q_num_frota:
         where.append(f"(v.numero_frota = {ph} OR v.num_frota = {ph})")
         params.extend([q_num_frota, q_num_frota])
-    if f_regiao:
-        where.append(f"COALESCE(v.regiao,'') = {ph}")
-        params.append(f_regiao)
-    if access_desc_list:
-        placeholders = ",".join([ph] * len(access_desc_list))
-        where.append(f"COALESCE(v.descricao,'') IN ({placeholders})")
-        params.extend(access_desc_list)
+    if session.get("role") == "operador":
+        scope_sql = " AND ".join(where)
+        scope_sql, params = apply_operator_scope_sql(
+            scope_sql,
+            params,
+            regiao_user if 'regiao_user' in locals() else None,
+            access_desc_list,
+            regiao_col="COALESCE(v.regiao,'')",
+            descricao_col="v.descricao",
+        )
+        where = [scope_sql]
+    else:
+        if f_regiao:
+            where.append(f"COALESCE(v.regiao,'') = {ph}")
+            params.append(f_regiao)
+        if access_desc_list:
+            placeholders = ",".join([ph] * len(access_desc_list))
+            where.append(f"COALESCE(v.descricao,'') IN ({placeholders})")
+            params.extend(access_desc_list)
     if f_operacao:
         where.append(f"COALESCE(v.operacao,'') = {ph}")
         params.append(f_operacao)
@@ -1969,22 +2007,13 @@ def viaturas():
     f_ativo = (request.args.get("ativo") or "").strip()
     f_filial = (request.args.get("filial") or "").strip()
     f_desc_list: list[str] = []
+    regiao_user = None
 
     # Se for gestor, força filtro pela sua região
     if session.get("role") in ("gestor", "operador"):
-        cur.execute(
-            f"SELECT regiao, descricao_viaturas FROM funcionarios WHERE id={ph}",
-            (session.get("user_id"),),
-        )
-        row = cur.fetchone()
-        regiao_user = (row["regiao"] or "").strip() if row else ""
-        if regiao_user:
+        regiao_user, f_desc_list = load_user_scope(cur, session.get("user_id"))
+        if session.get("role") == "gestor" and regiao_user:
             f_regiao = regiao_user
-        else:
-            # Operador com região vazia: restringir por lista de descrições
-            if session.get("role") == "operador":
-                descricao_user = (row["descricao_viaturas"] or "").strip() if row and row["descricao_viaturas"] else ""
-                f_desc_list = parse_descricao_viaturas(descricao_user)
 
     if request.method == "POST":
         matricula = (request.form.get("matricula") or "").strip()
@@ -2031,12 +2060,24 @@ def viaturas():
         else:
             where.append(f"v.num_frota = {ph}")
             params.append(q_num_frota)
-    if f_regiao:
-        where.append(f"COALESCE(v.regiao,'') = {ph}"); params.append(f_regiao)
-    if f_desc_list:
-        placeholders = ",".join([ph] * len(f_desc_list))
-        where.append(f"COALESCE(v.descricao,'') IN ({placeholders})")
-        params.extend(f_desc_list)
+    if session.get("role") == "operador":
+        scope_sql = " AND ".join(where)
+        scope_sql, params = apply_operator_scope_sql(
+            scope_sql,
+            params,
+            regiao_user,
+            f_desc_list,
+            regiao_col="COALESCE(v.regiao,'')",
+            descricao_col="v.descricao",
+        )
+        where = [scope_sql]
+    else:
+        if f_regiao:
+            where.append(f"COALESCE(v.regiao,'') = {ph}"); params.append(f_regiao)
+        if f_desc_list:
+            placeholders = ",".join([ph] * len(f_desc_list))
+            where.append(f"COALESCE(v.descricao,'') IN ({placeholders})")
+            params.extend(f_desc_list)
     if f_operacao:
         where.append(f"COALESCE(v.operacao,'') = {ph}"); params.append(f_operacao)
     if f_marca:
@@ -2082,6 +2123,28 @@ def viaturas():
     cur.execute("SELECT id, nome, frequencia_dias FROM protocolos WHERE UPPER(nome) IN ('PROTOCOLO B', 'PROTOCOLO C')")
     protocolos_bc = {r["nome"].upper(): dict(r) for r in cur.fetchall()}
 
+    # Última inspeção (verificação do gestor) por viatura, independente de protocolo
+    cur.execute("""
+        SELECT
+            r.viatura_id,
+            r.verificacao_limpeza,
+            r.comentarios_verificacao,
+            COALESCE(r.verificacao_em, r.data_hora) AS verif_data
+        FROM registos_limpeza r
+        WHERE r.verificacao_limpeza IS NOT NULL
+          AND TRIM(r.verificacao_limpeza) <> ''
+        ORDER BY r.viatura_id, COALESCE(r.verificacao_em, r.data_hora) DESC, r.id DESC
+    """)
+    last_inspecao_by_viatura = {}
+    for row in cur.fetchall():
+        vid = row["viatura_id"]
+        if vid not in last_inspecao_by_viatura:
+            last_inspecao_by_viatura[vid] = {
+                "status": row["verificacao_limpeza"],
+                "comentarios": row["comentarios_verificacao"],
+                "data": row["verif_data"],
+            }
+
     hoje = today_pt()
     for v in vs:
         v["tem_atraso"] = False
@@ -2107,26 +2170,24 @@ def viaturas():
             v[f"dias_{nome.replace(' ', '_').lower()}"] = dias
             v[f"freq_{nome.replace(' ', '_').lower()}"] = prot["frequencia_dias"]
 
-            # Dias desde a última inspeção (verificação registada pelo gestor)
-            cur.execute(f"""
-                SELECT MAX({sql_date_expr('COALESCE(r.verificacao_em, r.data_hora)')}) as ult
-                FROM registos_limpeza r
-                WHERE r.viatura_id={ph}
-                  AND r.protocolo_id={ph}
-                  AND r.verificacao_limpeza IS NOT NULL
-                  AND TRIM(r.verificacao_limpeza) <> ''
-            """, (v["id"], prot["id"]))
-            ult_i = cur.fetchone()["ult"]
-            if ult_i:
-                dias_inspecao = (hoje - datetime.fromisoformat(ult_i).date()).days
-            else:
-                dias_inspecao = None
-            v[f"dias_inspecao_{ins_key}"] = dias_inspecao
-            v[f"freq_inspecao_{ins_key}"] = prot["frequencia_dias"]
-
             # Verifica atraso
             if dias is not None and prot["frequencia_dias"] is not None and dias > prot["frequencia_dias"]:
                 v["tem_atraso"] = True
+
+        # Inspeção independente de protocolo (última verificação do gestor)
+        info_inspecao = last_inspecao_by_viatura.get(v["id"])
+        if info_inspecao and info_inspecao.get("data"):
+            try:
+                dias_desde = (hoje - datetime.fromisoformat(info_inspecao["data"]).date()).days
+            except Exception:
+                dias_desde = None
+            v["inspecao_verificada"] = info_inspecao.get("status")
+            v["inspecao_dias"] = dias_desde
+            v["inspecao_comentarios"] = info_inspecao.get("comentarios")
+        else:
+            v["inspecao_verificada"] = None
+            v["inspecao_dias"] = None
+            v["inspecao_comentarios"] = None
 
     # Ordenar: primeiro as viaturas com atraso, depois as restantes
     vs = sorted(vs, key=lambda v: (not v["tem_atraso"], v["matricula"]))
@@ -2781,21 +2842,13 @@ def solicitar_autorizacao(viatura_id):
 
     # Enforce de acesso: operador pode solicitar autorização apenas nas viaturas permitidas
     if session.get("role") == "operador":
-        cur.execute("SELECT regiao, descricao_viaturas FROM funcionarios WHERE id=?", (funcionario_id,))
-        prof = cur.fetchone()
-        prof_regiao = (prof["regiao"] or "").strip() if prof and prof["regiao"] else None
-        if prof_regiao:
-            if regiao != prof_regiao:
-                flash("Sem permissão para solicitar autorização nesta viatura.", "danger")
-                conn.close()
-                return redirect(url_for("novo_registo"))
-        else:
-            prof_desc = (prof["descricao_viaturas"] or "").strip() if prof and prof["descricao_viaturas"] else ""
-            prof_desc_list = parse_descricao_viaturas(prof_desc)
-            if prof_desc_list and v_desc not in prof_desc_list:
-                flash("Sem permissão para solicitar autorização nesta viatura.", "danger")
-                conn.close()
-                return redirect(url_for("novo_registo"))
+        prof_regiao, prof_desc_list = load_user_scope(cur, funcionario_id)
+        allowed_by_regiao = bool(prof_regiao and regiao == prof_regiao)
+        allowed_by_desc = bool(prof_desc_list and v_desc in prof_desc_list)
+        if not (allowed_by_regiao or allowed_by_desc):
+            flash("Sem permissão para solicitar autorização nesta viatura.", "danger")
+            conn.close()
+            return redirect(url_for("novo_registo"))
 
     destinatario_id = None
     if regiao:
@@ -2843,25 +2896,25 @@ def novo_registo():
     regiao_operador = None
     desc_list_operador: list[str] = []
     if user_role in ("operador", "gestor"):
-        cur.execute("SELECT regiao, descricao_viaturas FROM funcionarios WHERE id=?", (user_id,))
-        row = cur.fetchone()
-        regiao_operador = (row["regiao"] or "").strip() if row and row["regiao"] else None
-        if user_role == "operador" and not regiao_operador:
-            descricao_user = (row["descricao_viaturas"] or "").strip() if row and row["descricao_viaturas"] else ""
-            desc_list_operador = parse_descricao_viaturas(descricao_user)
+        regiao_operador, desc_list_operador = load_user_scope(cur, user_id)
 
     # GET: mostra o formulário
     if request.method == "GET":
         # Filtrar viaturas pela região do operador, se existir
         viaturas_sql = "SELECT id, matricula, descricao, num_frota FROM viaturas WHERE ativo=1"
         viaturas_params = []
-        if regiao_operador:
+        if user_role == "operador":
+            viaturas_sql, viaturas_params = apply_operator_scope_sql(
+                viaturas_sql,
+                viaturas_params,
+                regiao_operador,
+                desc_list_operador,
+                regiao_col="regiao",
+                descricao_col="descricao",
+            )
+        elif regiao_operador:
             viaturas_sql += " AND regiao = ?"
             viaturas_params.append(regiao_operador)
-        elif desc_list_operador:
-            placeholders = ",".join(["?"] * len(desc_list_operador))
-            viaturas_sql += f" AND COALESCE(descricao,'') IN ({placeholders})"
-            viaturas_params.extend(desc_list_operador)
         viaturas_sql += " ORDER BY matricula"
         cur.execute(viaturas_sql, viaturas_params)
         vs = [dict(row) for row in cur.fetchall()]
@@ -2916,16 +2969,12 @@ def novo_registo():
             return redirect(url_for("novo_registo"))
         v_regiao = (vrow["regiao"] or "").strip()
         v_desc = (vrow["descricao"] or "").strip()
-        if regiao_operador:
-            if v_regiao != regiao_operador:
-                flash("Sem permissão para esta viatura.", "danger")
-                conn.close()
-                return redirect(url_for("novo_registo"))
-        elif desc_list_operador:
-            if v_desc not in desc_list_operador:
-                flash("Sem permissão para esta viatura.", "danger")
-                conn.close()
-                return redirect(url_for("novo_registo"))
+        allowed_by_regiao = bool(regiao_operador and v_regiao == regiao_operador)
+        allowed_by_desc = bool(desc_list_operador and v_desc in desc_list_operador)
+        if not (allowed_by_regiao or allowed_by_desc):
+            flash("Sem permissão para esta viatura.", "danger")
+            conn.close()
+            return redirect(url_for("novo_registo"))
     
     # Verifica se já foi limpa hoje
     cur.execute("""
@@ -2962,13 +3011,18 @@ def novo_registo():
         flash("Viatura já efetuou limpeza hoje, solicite autorização para limpeza extra.", "warning")
         viaturas_sql = "SELECT id, matricula, descricao, num_frota FROM viaturas WHERE ativo=1"
         viaturas_params = []
-        if regiao_operador:
+        if user_role == "operador":
+            viaturas_sql, viaturas_params = apply_operator_scope_sql(
+                viaturas_sql,
+                viaturas_params,
+                regiao_operador,
+                desc_list_operador,
+                regiao_col="regiao",
+                descricao_col="descricao",
+            )
+        elif regiao_operador:
             viaturas_sql += " AND regiao = ?"
             viaturas_params.append(regiao_operador)
-        elif desc_list_operador:
-            placeholders = ",".join(["?"] * len(desc_list_operador))
-            viaturas_sql += f" AND COALESCE(descricao,'') IN ({placeholders})"
-            viaturas_params.extend(desc_list_operador)
         viaturas_sql += " ORDER BY matricula"
         cur.execute(viaturas_sql, viaturas_params)
         vs = [dict(row) for row in cur.fetchall()]
@@ -3316,6 +3370,11 @@ def admin_user_reset_password(user_id):
 @require_perm("users:manage")
 def admin_user_new():
     roles = sorted(PERMISSIONS.keys())
+    conn_opts = get_conn()
+    cur_opts = conn_opts.cursor()
+    cur_opts.execute("SELECT DISTINCT descricao FROM viaturas WHERE descricao IS NOT NULL AND TRIM(descricao)<>'' ORDER BY descricao")
+    descricao_options = [r["descricao"] for r in cur_opts.fetchall()]
+    conn_opts.close()
     if request.method == "POST":
         username = (request.form.get("username") or "").strip()
         nome = (request.form.get("nome") or "").strip()
@@ -3323,8 +3382,11 @@ def admin_user_new():
         role = normalize_role(request.form.get("role"))
         ativo = 1 if request.form.get("ativo") == "1" else 0
         regiao = (request.form.get("regiao") or "").strip()
-        empresa = (request.form.get("empresa") or "").strip() if role == "operador" else None
-        descricao_viaturas = (request.form.get("descricao_viaturas") or "").strip() if role == "operador" else None
+        empresa = (request.form.get("empresa") or "").strip() if role in ("operador", "gestor") else None
+        desc_multi = request.form.getlist("descricao_viaturas_multi")
+        desc_multi = [d.strip() for d in desc_multi if d and d.strip()]
+        desc_text = parse_descricao_viaturas(request.form.get("descricao_viaturas") or "")
+        descricao_viaturas = ";".join(desc_multi or desc_text) if role == "operador" else None
         password = request.form.get("password") or ""
         if not username or not password:
             flash("Username e password são obrigatórios.", "danger")
@@ -3342,7 +3404,7 @@ def admin_user_new():
             return redirect(url_for("admin_user_new"))
         finally:
             conn.close()
-    return render_template("admin_user_form.html", roles=roles, signature=APP_SIGNATURE)
+    return render_template("admin_user_form.html", roles=roles, descricao_options=descricao_options, selected_desc=[], signature=APP_SIGNATURE)
 
 @app.route("/admin/users/<int:user_id>/editar", methods=["GET","POST"])
 @login_required
@@ -3356,8 +3418,11 @@ def admin_user_edit(user_id):
         role = normalize_role(request.form.get("role"))
         ativo = 1 if request.form.get("ativo") == "1" else 0
         regiao = (request.form.get("regiao") or "").strip()
-        empresa = (request.form.get("empresa") or "").strip() if role == "operador" else None
-        descricao_viaturas = (request.form.get("descricao_viaturas") or "").strip() if role == "operador" else None
+        empresa = (request.form.get("empresa") or "").strip() if role in ("operador", "gestor") else None
+        desc_multi = request.form.getlist("descricao_viaturas_multi")
+        desc_multi = [d.strip() for d in desc_multi if d and d.strip()]
+        desc_text = parse_descricao_viaturas(request.form.get("descricao_viaturas") or "")
+        descricao_viaturas = ";".join(desc_multi or desc_text) if role == "operador" else None
         if not username:
             flash("Username é obrigatório.", "danger"); conn.close()
             return redirect(url_for("admin_user_edit", user_id=user_id))
@@ -3377,7 +3442,13 @@ def admin_user_edit(user_id):
         flash("Utilizador não encontrado.", "danger")
         return redirect(url_for("admin_users"))
     roles = sorted(PERMISSIONS.keys())
-    return render_template("admin_user_form.html", roles=roles, user=u, signature=APP_SIGNATURE)
+    conn_opts = get_conn()
+    cur_opts = conn_opts.cursor()
+    cur_opts.execute("SELECT DISTINCT descricao FROM viaturas WHERE descricao IS NOT NULL AND TRIM(descricao)<>'' ORDER BY descricao")
+    descricao_options = [r["descricao"] for r in cur_opts.fetchall()]
+    conn_opts.close()
+    selected_desc = parse_descricao_viaturas(u["descricao_viaturas"] if "descricao_viaturas" in u.keys() else "")
+    return render_template("admin_user_form.html", roles=roles, user=u, descricao_options=descricao_options, selected_desc=selected_desc, signature=APP_SIGNATURE)
 
 @app.route("/admin/roles")
 @login_required
@@ -3686,12 +3757,7 @@ def registos():
     regiao_user = None
     desc_list_user: list[str] = []
     if user_role in ("operador", "gestor"):
-        cur.execute("SELECT regiao, descricao_viaturas FROM funcionarios WHERE id=?", (user_id,))
-        row = cur.fetchone()
-        regiao_user = (row["regiao"] or "").strip() if row and row["regiao"] else None
-        if user_role == "operador" and not regiao_user:
-            descricao_user = (row["descricao_viaturas"] or "").strip() if row and row["descricao_viaturas"] else ""
-            desc_list_user = parse_descricao_viaturas(descricao_user)
+        regiao_user, desc_list_user = load_user_scope(cur, user_id)
 
     sql = """
         SELECT r.id as registo_id, r.data_hora, r.hora_inicio, r.hora_fim, v.matricula, v.num_frota,
@@ -3707,13 +3773,18 @@ def registos():
     if mes:
         sql += " AND substr(r.data_hora, 1, 7) = ?"
         params.append(mes)
-    if regiao_user:
+    if user_role == "operador":
+        sql, params = apply_operator_scope_sql(
+            sql,
+            params,
+            regiao_user,
+            desc_list_user,
+            regiao_col="v.regiao",
+            descricao_col="v.descricao",
+        )
+    elif regiao_user:
         sql += " AND v.regiao = ?"
         params.append(regiao_user)
-    elif user_role == "operador" and desc_list_user:
-        placeholders = ",".join(["?"] * len(desc_list_user))
-        sql += f" AND COALESCE(v.descricao,'') IN ({placeholders})"
-        params.extend(desc_list_user)
     sql += " ORDER BY v.regiao ASC, r.data_hora ASC, r.id ASC"
     cur.execute(sql, params)
     registos = [dict(row) for row in cur.fetchall()]
@@ -3749,12 +3820,7 @@ def export_excel():
     regiao_user = None
     desc_list_user: list[str] = []
     if user_role in ("operador", "gestor"):
-        cur.execute("SELECT regiao, descricao_viaturas FROM funcionarios WHERE id=?", (user_id,))
-        row = cur.fetchone()
-        regiao_user = (row["regiao"] or "").strip() if row and row["regiao"] else None
-        if user_role == "operador" and not regiao_user:
-            descricao_user = (row["descricao_viaturas"] or "").strip() if row and row["descricao_viaturas"] else ""
-            desc_list_user = parse_descricao_viaturas(descricao_user)
+        regiao_user, desc_list_user = load_user_scope(cur, user_id)
 
     sql = """
         SELECT
@@ -3783,13 +3849,18 @@ def export_excel():
     if mes:
         sql += " AND substr(r.data_hora, 1, 7) = ?"
         params.append(mes)
-    if regiao_user and user_role != "admin":
+    if user_role == "operador":
+        sql, params = apply_operator_scope_sql(
+            sql,
+            params,
+            regiao_user,
+            desc_list_user,
+            regiao_col="v.regiao",
+            descricao_col="v.descricao",
+        )
+    elif regiao_user and user_role != "admin":
         sql += " AND v.regiao = ?"
         params.append(regiao_user)
-    elif user_role == "operador" and desc_list_user:
-        placeholders = ",".join(["?"] * len(desc_list_user))
-        sql += f" AND COALESCE(v.descricao,'') IN ({placeholders})"
-        params.extend(desc_list_user)
     sql += " ORDER BY r.data_hora DESC, r.id DESC"
     df = pd.read_sql_query(sql, conn, params=params)
     conn.close()
@@ -3878,12 +3949,7 @@ def export_registos_excel():
     regiao_user = None
     desc_list_user: list[str] = []
     if user_role in ("operador", "gestor"):
-        cur.execute("SELECT regiao, descricao_viaturas FROM funcionarios WHERE id=?", (user_id,))
-        row = cur.fetchone()
-        regiao_user = (row["regiao"] or "").strip() if row and row["regiao"] else None
-        if user_role == "operador" and not regiao_user:
-            descricao_user = (row["descricao_viaturas"] or "").strip() if row and row["descricao_viaturas"] else ""
-            desc_list_user = parse_descricao_viaturas(descricao_user)
+        regiao_user, desc_list_user = load_user_scope(cur, user_id)
 
     sql = """
         SELECT
@@ -3912,13 +3978,18 @@ def export_registos_excel():
     if mes:
         sql += " AND substr(r.data_hora, 1, 7) = ?"
         params.append(mes)
-    if regiao_user and user_role != "admin":
+    if user_role == "operador":
+        sql, params = apply_operator_scope_sql(
+            sql,
+            params,
+            regiao_user,
+            desc_list_user,
+            regiao_col="v.regiao",
+            descricao_col="v.descricao",
+        )
+    elif regiao_user and user_role != "admin":
         sql += " AND v.regiao = ?"
         params.append(regiao_user)
-    elif user_role == "operador" and desc_list_user:
-        placeholders = ",".join(["?"] * len(desc_list_user))
-        sql += f" AND COALESCE(v.descricao,'') IN ({placeholders})"
-        params.extend(desc_list_user)
     sql += " ORDER BY r.data_hora DESC, r.id DESC"
     df = pd.read_sql_query(sql, conn, params=params)
     conn.close()

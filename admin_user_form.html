@@ -14,8 +14,12 @@
       </label>
       <label id="descricao-viaturas-label" style="display:none;">
         Descrição das viaturas
-        <input name="descricao_viaturas" placeholder="ex.: Autocarro Urbano;Autocarro Suburbano"
-          value="{{ user.descricao_viaturas if user else '' }}">
+        <select name="descricao_viaturas_multi" multiple size="6" style="min-width:260px;">
+          {% for d in descricao_options or [] %}
+            <option value="{{ d }}" {% if d in (selected_desc or []) %}selected{% endif %}>{{ d }}</option>
+          {% endfor %}
+        </select>
+        <small class="muted">Use Ctrl/Command para selecionar várias descrições.</small>
       </label>
       {% if not user %}
       <label>Password
@@ -58,16 +62,22 @@
       var role = document.getElementById('role-select').value;
       var empresaLabel = document.getElementById('empresa-label');
       var descricaoLabel = document.getElementById('descricao-viaturas-label');
-      if (role === 'operador') {
+      var empresaInput = empresaLabel.querySelector('input');
+      var descricaoSelect = descricaoLabel.querySelector('select');
+      if (role === 'operador' || role === 'gestor') {
         empresaLabel.style.display = '';
-        empresaLabel.querySelector('input').disabled = false;
-        descricaoLabel.style.display = '';
-        descricaoLabel.querySelector('input').disabled = false;
+        empresaInput.disabled = false;
       } else {
         empresaLabel.style.display = 'none';
-        empresaLabel.querySelector('input').disabled = true;
+        empresaInput.disabled = true;
+      }
+
+      if (role === 'operador') {
+        descricaoLabel.style.display = '';
+        descricaoSelect.disabled = false;
+      } else {
         descricaoLabel.style.display = 'none';
-        descricaoLabel.querySelector('input').disabled = true;
+        descricaoSelect.disabled = true;
       }
     }
     // Executa ao carregar a página

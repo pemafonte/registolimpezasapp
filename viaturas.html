@@ -31,8 +31,8 @@
       <th>Filial</th>
       <th>Protocolo B<br>(dias sem realizar)</th>
       <th>Protocolo C<br>(dias sem realizar)</th>
-      <th>Inspeção B<br>(dias sem verificar)</th>
-      <th>Inspeção C<br>(dias sem verificar)</th>
+      <th>Inspeção verificada</th>
+      <th>Dias desde última verificação</th>
       {% if can('viaturas:import') %}
         <th>Ações</th>
       {% endif %}
@@ -130,30 +130,8 @@
           —
        {% endif %}
       </td>
-      <td>
-        {% set dias_ib = v.dias_inspecao_b %}
-        {% set freq_ib = v.freq_inspecao_b %}
-        {% if dias_ib is not none %}
-          {{ dias_ib }}{% if freq_ib %}/{{ freq_ib }} dias{% endif %}
-          {% if freq_ib and dias_ib > freq_ib %}
-            <span style="color:red;">(Atrasado)</span>
-          {% endif %}
-        {% else %}
-          —
-        {% endif %}
-      </td>
-      <td>
-        {% set dias_ic = v.dias_inspecao_c %}
-        {% set freq_ic = v.freq_inspecao_c %}
-        {% if dias_ic is not none %}
-          {{ dias_ic }}{% if freq_ic %}/{{ freq_ic }} dias{% endif %}
-          {% if freq_ic and dias_ic > freq_ic %}
-            <span style="color:red;">(Atrasado)</span>
-          {% endif %}
-        {% else %}
-          —
-        {% endif %}
-      </td>
+      <td>{{ v.inspecao_verificada or "—" }}</td>
+      <td>{{ v.inspecao_dias if v.inspecao_dias is not none else "—" }}</td>
       {% if can('viaturas:import') %}
       <td>
         <form method="post" action="{{ url_for('ativar_desativar_viatura', viatura_id=v.id) }}" style="display:inline;" onsubmit="return confirm('Deseja {% if v.ativo %}desativar{% else %}ativar{% endif %} a viatura {{ v.matricula }}?');">
