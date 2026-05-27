@@ -15,7 +15,7 @@
   <a class="btn btn-primary" href="{{ url_for('export_registos_excel') }}">Exportar Excel (todos)</a>
 {% endif %}
 
-{% if session['role'] == 'operador' %}
+{% if session.get('role') == 'operador' %}
 <p>
   <a class="btn btn-primary" href="{{ url_for('novo_registo') }}">Novo Registo</a>
   <a class="btn btn-info" href="{{ url_for('registos_em_progresso') }}">Limpezas em Progresso</a>
@@ -53,7 +53,7 @@
       {% endif %}
       <tr>
         <td style="white-space:nowrap;">{{ r.id_regiao }}</td>
-        <td>{{ r.data_hora[:10] }}</td>
+        <td>{{ (r.data_hora or '')[:10] }}</td>
         <td>{{ r.hora_inicio or "—" }}</td>
         <td>{{ r.hora_fim or "—" }}</td>
         <td>{{ r.matricula }}</td>

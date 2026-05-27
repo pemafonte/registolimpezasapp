@@ -96,7 +96,7 @@
         <td colspan="13" style="text-align:right;">
           <button class="btn" type="submit">Filtrar</button>
           <a class="btn" href="{{ url_for('viaturas') }}">Limpar</a>
-          <a class="btn" href="{{ url_for('exportar_viaturas_csv') }}?{{ request.query_string.decode() }}">Exportar Excel</a>
+          <a class="btn" href="{{ url_for('exportar_viaturas_excel') }}?{{ request.query_string.decode() }}">Exportar Excel</a>
         </td>
       </form>
     </tr>

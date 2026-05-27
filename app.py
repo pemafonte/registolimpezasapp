@@ -29,7 +29,7 @@ TEMPLATES_DIR = BASE_DIR / "templates"
 OVERWRITE_TEMPLATES = False
 APP_TITLE = "Registo Limpezas de Viaturas Grupo Tejo"
 APP_SIGNATURE = "Created by Pedro Fonte"
-APP_BUILD = "2026-05-27-inspecao-viaturas"
+APP_BUILD = "2026-05-27-export-fix"
 
 ALLOWED_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".pdf"}
 
@@ -853,6 +853,94 @@ def first_col(row, default=None):
         return row[0]
     except Exception:
         return default
+
+
+def fetch_dataframe(conn, sql: str, params: list | None = None):
+    """Executa SQL via cursor (compatível SQLite/PostgreSQL) e devolve DataFrame."""
+    import pandas as pd
+
+    cur = conn.cursor()
+    cur.execute(sql, params or ())
+    rows = cur.fetchall()
+    if not rows:
+        return pd.DataFrame()
+    return pd.DataFrame([dict(r) for r in rows])
+
+
+def _viaturas_export_filters(request, session, conn):
+    """Cláusulas WHERE e parâmetros para exportação de viaturas (CSV/Excel)."""
+    cur = conn.cursor()
+    ph = sql_placeholder(conn)
+    viaturas_cols = table_columns(conn, "viaturas")
+    has_numero_frota = "numero_frota" in viaturas_cols
+    num_frota_expr = "COALESCE(v.numero_frota, v.num_frota)" if has_numero_frota else "v.num_frota"
+
+    q_matricula = (request.args.get("matricula") or "").strip()
+    q_num_frota = (request.args.get("num_frota") or "").strip()
+    f_regiao = (request.args.get("regiao") or "").strip()
+    f_operacao = (request.args.get("operacao") or "").strip()
+    f_marca = (request.args.get("marca") or "").strip()
+    f_modelo = (request.args.get("modelo") or "").strip()
+    f_ativo = (request.args.get("ativo") or "").strip()
+    f_filial = (request.args.get("filial") or "").strip()
+    f_descricao = (request.args.get("descricao") or "").strip()
+    access_desc_list: list[str] = []
+    regiao_user = None
+
+    where = ["1=1"]
+    params: list = []
+
+    if session.get("role") in ("gestor", "operador"):
+        regiao_user, access_desc_list = load_user_scope(cur, session.get("user_id"))
+        if session.get("role") == "gestor" and regiao_user:
+            f_regiao = regiao_user
+
+    if q_matricula:
+        where.append(f"v.matricula LIKE {ph}")
+        params.append(f"%{q_matricula}%")
+    if q_num_frota:
+        where.append(f"{num_frota_expr} = {ph}")
+        params.append(q_num_frota)
+    if session.get("role") == "operador":
+        scope_sql = " AND ".join(where)
+        scope_sql, params = apply_operator_scope_sql(
+            scope_sql,
+            params,
+            regiao_user,
+            access_desc_list,
+            regiao_col="COALESCE(v.regiao,'')",
+            descricao_col="v.descricao",
+        )
+        where = [scope_sql]
+    else:
+        if f_regiao:
+            where.append(f"COALESCE(v.regiao,'') = {ph}")
+            params.append(f_regiao)
+        if access_desc_list:
+            placeholders = ",".join([ph] * len(access_desc_list))
+            where.append(f"COALESCE(v.descricao,'') IN ({placeholders})")
+            params.extend(access_desc_list)
+    if f_operacao:
+        where.append(f"COALESCE(v.operacao,'') = {ph}")
+        params.append(f_operacao)
+    if f_marca:
+        where.append(f"COALESCE(v.marca,'') = {ph}")
+        params.append(f_marca)
+    if f_modelo:
+        where.append(f"COALESCE(v.modelo,'') = {ph}")
+        params.append(f_modelo)
+    if f_ativo in ("0", "1"):
+        where.append(f"v.ativo = {ph}")
+        params.append(int(f_ativo))
+    if f_filial:
+        where.append(f"COALESCE(v.filial,'') = {ph}")
+        params.append(f_filial)
+    if f_descricao:
+        where.append(f"COALESCE(v.descricao,'') = {ph}")
+        params.append(f_descricao)
+
+    return ph, num_frota_expr, where, params
+
 
 def table_columns(conn, table_name: str) -> set[str]:
     cur = conn.cursor()
@@ -1912,69 +2000,16 @@ def validar_pedido_autorizacao(pedido_id):
 @login_required
 @require_perm("viaturas:view")
 def exportar_viaturas_csv():
-    q_matricula = (request.args.get("matricula") or "").strip()
-    q_num_frota = (request.args.get("num_frota") or "").strip()
-    f_regiao = (request.args.get("regiao") or "").strip()
-    access_desc_list: list[str] = []
-    f_operacao = (request.args.get("operacao") or "").strip()
-    f_marca = (request.args.get("marca") or "").strip()
-    f_modelo = (request.args.get("modelo") or "").strip()
-    f_ativo = (request.args.get("ativo") or "").strip()
-
     conn = get_conn()
+    ph, num_frota_expr, where, params = _viaturas_export_filters(request, session, conn)
     cur = conn.cursor()
-    ph = sql_placeholder(conn)
-    where = ["1=1"]
-    params = []
-
-    # Restrições de acesso pelo perfil
-    if session.get("role") in ("gestor", "operador"):
-        regiao_user, access_desc_list = load_user_scope(cur, session.get("user_id"))
-        if session.get("role") == "gestor" and regiao_user:
-            f_regiao = regiao_user
-    if q_matricula:
-        where.append(f"v.matricula LIKE {ph}")
-        params.append(f"%{q_matricula}%")
-    if q_num_frota:
-        where.append(f"(v.numero_frota = {ph} OR v.num_frota = {ph})")
-        params.extend([q_num_frota, q_num_frota])
-    if session.get("role") == "operador":
-        scope_sql = " AND ".join(where)
-        scope_sql, params = apply_operator_scope_sql(
-            scope_sql,
-            params,
-            regiao_user if 'regiao_user' in locals() else None,
-            access_desc_list,
-            regiao_col="COALESCE(v.regiao,'')",
-            descricao_col="v.descricao",
-        )
-        where = [scope_sql]
-    else:
-        if f_regiao:
-            where.append(f"COALESCE(v.regiao,'') = {ph}")
-            params.append(f_regiao)
-        if access_desc_list:
-            placeholders = ",".join([ph] * len(access_desc_list))
-            where.append(f"COALESCE(v.descricao,'') IN ({placeholders})")
-            params.extend(access_desc_list)
-    if f_operacao:
-        where.append(f"COALESCE(v.operacao,'') = {ph}")
-        params.append(f_operacao)
-    if f_marca:
-        where.append(f"COALESCE(v.marca,'') = {ph}")
-        params.append(f_marca)
-    if f_modelo:
-        where.append(f"COALESCE(v.modelo,'') = {ph}")
-        params.append(f_modelo)
-    if f_ativo in ("0", "1"):
-        where.append(f"v.ativo = {ph}")
-        params.append(int(f_ativo))
 
     cur.execute(f"""
     SELECT v.id, v.matricula,
-           COALESCE(v.numero_frota, v.num_frota) AS numero_frota,
+           {num_frota_expr} AS numero_frota,
            v.regiao, v.operacao, v.marca, v.modelo, v.tipo_protocolo,
-           v.descricao, v.filial, v.num_frota, v.ativo, v.criado_em
+           v.descricao, v.filial, v.num_frota, v.ativo, v.criado_em,
+           v.verificacao_limpeza, v.verificacao_em
     FROM viaturas v
     WHERE { " AND ".join(where) }
     ORDER BY v.matricula
@@ -2570,18 +2605,23 @@ def ativar_desativar_viatura(viatura_id):
 @require_perm("viaturas:view")
 def exportar_viaturas_excel():
     import pandas as pd
+
     conn = get_conn()
-    cur = conn.cursor()
-    cur.execute("""
-        SELECT id, matricula, num_frota, regiao, operacao, marca, modelo, tipo_protocolo, descricao, filial, ativo, criado_em
-        FROM viaturas
-        ORDER BY matricula
-    """)
-    rows = [dict(r) for r in cur.fetchall()]
+    ph, num_frota_expr, where, params = _viaturas_export_filters(request, session, conn)
+    sql = f"""
+        SELECT v.id, v.matricula, {num_frota_expr} AS num_frota,
+               v.regiao, v.operacao, v.marca, v.modelo, v.tipo_protocolo,
+               v.descricao, v.filial, v.ativo, v.criado_em,
+               v.verificacao_limpeza, v.verificacao_em
+        FROM viaturas v
+        WHERE {" AND ".join(where)}
+        ORDER BY v.matricula
+    """
+    df = fetch_dataframe(conn, sql, params)
     conn.close()
-    df = pd.DataFrame(rows)
     fname = EXPORT_DIR / f"viaturas_{now_pt().strftime('%Y%m%d_%H%M%S')}.xlsx"
-    df.to_excel(fname, index=False, sheet_name="Viaturas")
+    with pd.ExcelWriter(fname, engine="openpyxl") as writer:
+        df.to_excel(writer, index=False, sheet_name="Viaturas")
     return send_file(fname, as_attachment=True)
 # -----------------------------------------------------------------------------
 # Protocolos (listar / editar / novo)
@@ -3238,7 +3278,8 @@ def exportar_contabilidade_excel():
 
     conn = get_conn()
     cur = conn.cursor()
-    sql = """
+    ph = sql_placeholder(conn)
+    sql = f"""
         SELECT substr(r.data_hora, 1, 10) as data, v.matricula, v.num_frota, v.regiao, p.nome as protocolo, p.custo_limpeza, f.nome as funcionario, f.empresa, r.local
         FROM registos_limpeza r
         JOIN viaturas v ON v.id = r.viatura_id
@@ -3248,20 +3289,20 @@ def exportar_contabilidade_excel():
     """
     params = []
     if mes:
-        sql += " AND substr(r.data_hora, 1, 7) = ?"
+        sql += f" AND substr(r.data_hora, 1, 7) = {ph}"
         params.append(mes)
     if protocolo_id:
-        sql += " AND p.id = ?"
+        sql += f" AND p.id = {ph}"
         params.append(protocolo_id)
     if regiao:
-        sql += " AND v.regiao = ?"
+        sql += f" AND v.regiao = {ph}"
         params.append(regiao)
     if empresa:
-        sql += " AND f.empresa = ?"
-        params.append(empresa) 
+        sql += f" AND f.empresa = {ph}"
+        params.append(empresa)
 
     sql += " ORDER BY v.regiao ASC, r.data_hora ASC, r.id ASC"
-    df = pd.read_sql_query(sql, conn, params=params)
+    df = fetch_dataframe(conn, sql, params)
     conn.close()
 
     # Gerar id_regiao sequencial por região (do mais antigo para o mais recente)
@@ -3746,6 +3787,7 @@ def registos():
     mes = request.args.get("mes")
     conn = get_conn()
     cur = conn.cursor()
+    ph = sql_placeholder(conn)
 
     # Obter região do utilizador (operador ou gestor)
     user_id = session.get("user_id")
@@ -3755,7 +3797,7 @@ def registos():
     if user_role in ("operador", "gestor"):
         regiao_user, desc_list_user = load_user_scope(cur, user_id)
 
-    sql = """
+    sql = f"""
         SELECT r.id as registo_id, r.data_hora, r.hora_inicio, r.hora_fim, v.matricula, v.num_frota,
                p.nome as protocolo, f.nome as funcionario, r.local, r.verificacao_limpeza,
                r.extra_autorizada, v.regiao, r.observacoes
@@ -3767,7 +3809,7 @@ def registos():
     """
     params = []
     if mes:
-        sql += " AND substr(r.data_hora, 1, 7) = ?"
+        sql += f" AND substr(r.data_hora, 1, 7) = {ph}"
         params.append(mes)
     if user_role == "operador":
         sql, params = apply_operator_scope_sql(
@@ -3779,7 +3821,7 @@ def registos():
             descricao_col="v.descricao",
         )
     elif regiao_user:
-        sql += " AND v.regiao = ?"
+        sql += f" AND v.regiao = {ph}"
         params.append(regiao_user)
     sql += " ORDER BY v.regiao ASC, r.data_hora ASC, r.id ASC"
     cur.execute(sql, params)
@@ -3809,6 +3851,7 @@ def export_excel():
     mes = request.args.get("mes")
     conn = get_conn()
     cur = conn.cursor()
+    ph = sql_placeholder(conn)
 
     # Obter região do utilizador (operador ou gestor)
     user_id = session.get("user_id")
@@ -3818,7 +3861,7 @@ def export_excel():
     if user_role in ("operador", "gestor"):
         regiao_user, desc_list_user = load_user_scope(cur, user_id)
 
-    sql = """
+    sql = f"""
         SELECT
             r.id as id_regiao,
             r.data_hora,
@@ -3843,7 +3886,7 @@ def export_excel():
     """
     params = []
     if mes:
-        sql += " AND substr(r.data_hora, 1, 7) = ?"
+        sql += f" AND substr(r.data_hora, 1, 7) = {ph}"
         params.append(mes)
     if user_role == "operador":
         sql, params = apply_operator_scope_sql(
@@ -3855,12 +3898,12 @@ def export_excel():
             descricao_col="v.descricao",
         )
     elif regiao_user and user_role != "admin":
-        sql += " AND v.regiao = ?"
+        sql += f" AND v.regiao = {ph}"
         params.append(regiao_user)
     sql += " ORDER BY r.data_hora DESC, r.id DESC"
-    df = pd.read_sql_query(sql, conn, params=params)
+    df = fetch_dataframe(conn, sql, params)
     conn.close()
-     
+
     if not df.empty:
         # Ordena por regiao e data/hora ASC (mais antigo primeiro)
         df = df.sort_values(["regiao", "data_hora", "id_regiao"])
@@ -3905,12 +3948,10 @@ def export_excel():
     # Sheet principal: registos
     # Sheet secundária: protocolos
     conn = get_conn()
-    df_protocolos = pd.read_sql_query("""
-        SELECT nome, passos_json, frequencia_dias
-        FROM protocolos
-        WHERE ativo=1
-        ORDER BY nome
-    """, conn)
+    df_protocolos = fetch_dataframe(
+        conn,
+        "SELECT nome, passos_json, frequencia_dias FROM protocolos WHERE ativo=1 ORDER BY nome",
+    )
     conn.close()
 
     # Transformar passos_json em texto
@@ -3920,13 +3961,15 @@ def export_excel():
             return "\n".join(data.get('passos', []))
         except Exception:
             return ""
-    df_protocolos['passos'] = df_protocolos.apply(passos_text, axis=1)
-    df_protocolos = df_protocolos[['nome', 'passos', 'frequencia_dias']]
+    if not df_protocolos.empty:
+        df_protocolos['passos'] = df_protocolos.apply(passos_text, axis=1)
+        df_protocolos = df_protocolos[['nome', 'passos', 'frequencia_dias']]
 
     with pd.ExcelWriter(fname, engine="xlsxwriter") as writer:
         if not df.empty:
             df.to_excel(writer, index=False, sheet_name="Registos de Limpeza")
-        df_protocolos.to_excel(writer, index=False, sheet_name="Protocolos")
+        if not df_protocolos.empty:
+            df_protocolos.to_excel(writer, index=False, sheet_name="Protocolos")
 
     return send_file(fname, as_attachment=True)
 
@@ -3938,6 +3981,7 @@ def export_registos_excel():
     mes = request.args.get("mes")
     conn = get_conn()
     cur = conn.cursor()
+    ph = sql_placeholder(conn)
 
     # Obter região do utilizador (operador ou gestor)
     user_id = session.get("user_id")
@@ -3947,7 +3991,7 @@ def export_registos_excel():
     if user_role in ("operador", "gestor"):
         regiao_user, desc_list_user = load_user_scope(cur, user_id)
 
-    sql = """
+    sql = f"""
         SELECT
             r.id as id_regiao,
             r.data_hora,
@@ -3972,7 +4016,7 @@ def export_registos_excel():
     """
     params = []
     if mes:
-        sql += " AND substr(r.data_hora, 1, 7) = ?"
+        sql += f" AND substr(r.data_hora, 1, 7) = {ph}"
         params.append(mes)
     if user_role == "operador":
         sql, params = apply_operator_scope_sql(
@@ -3984,10 +4028,10 @@ def export_registos_excel():
             descricao_col="v.descricao",
         )
     elif regiao_user and user_role != "admin":
-        sql += " AND v.regiao = ?"
+        sql += f" AND v.regiao = {ph}"
         params.append(regiao_user)
     sql += " ORDER BY r.data_hora DESC, r.id DESC"
-    df = pd.read_sql_query(sql, conn, params=params)
+    df = fetch_dataframe(conn, sql, params)
     conn.close()
 
     if not df.empty:
@@ -4030,12 +4074,10 @@ def export_registos_excel():
     # Sheet principal: registos
     # Sheet secundária: protocolos
     conn = get_conn()
-    df_protocolos = pd.read_sql_query("""
-        SELECT nome, passos_json, frequencia_dias
-        FROM protocolos
-        WHERE ativo=1
-        ORDER BY nome
-    """, conn)
+    df_protocolos = fetch_dataframe(
+        conn,
+        "SELECT nome, passos_json, frequencia_dias FROM protocolos WHERE ativo=1 ORDER BY nome",
+    )
     conn.close()
 
     # Transformar passos_json em texto
@@ -4045,13 +4087,15 @@ def export_registos_excel():
             return "\n".join(data.get('passos', []))
         except Exception:
             return ""
-    df_protocolos['passos'] = df_protocolos.apply(passos_text, axis=1)
-    df_protocolos = df_protocolos[['nome', 'passos', 'frequencia_dias']]
+    if not df_protocolos.empty:
+        df_protocolos['passos'] = df_protocolos.apply(passos_text, axis=1)
+        df_protocolos = df_protocolos[['nome', 'passos', 'frequencia_dias']]
 
     with pd.ExcelWriter(fname, engine="xlsxwriter") as writer:
         if not df.empty:
             df.to_excel(writer, index=False, sheet_name="Registos de Limpeza")
-        df_protocolos.to_excel(writer, index=False, sheet_name="Protocolos")
+        if not df_protocolos.empty:
+            df_protocolos.to_excel(writer, index=False, sheet_name="Protocolos")
 
     return send_file(fname, as_attachment=True)
 if __name__ == "__main__":
