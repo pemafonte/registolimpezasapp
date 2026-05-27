@@ -5,9 +5,14 @@
     <label>Verificação:
       <select name="verificacao_limpeza" required>
         <option value="">— selecione —</option>
+        <option value="verificada" {% if registo.verificacao_limpeza == "verificada" %}selected{% endif %}>Verificada</option>
         <option value="conforme" {% if registo.verificacao_limpeza == "conforme" %}selected{% endif %}>Conforme</option>
         <option value="não conforme" {% if registo.verificacao_limpeza == "não conforme" %}selected{% endif %}>Não conforme</option>
       </select>
+    </label>
+    <label style="display:block;margin-top:10px;">
+      Comentário (obrigatório se Não conforme)
+      <textarea name="comentarios_verificacao" rows="4" style="width:100%;">{{ registo.comentarios_verificacao or "" }}</textarea>
     </label>
     <p>
       <button class="btn btn-primary" type="submit">Registar Verificação</button>

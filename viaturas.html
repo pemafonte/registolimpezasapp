@@ -11,6 +11,7 @@
   <input type="text" name="operacao" placeholder="Operação" style="width:100px;">
   <input type="text" name="marca" placeholder="Marca" style="width:100px;">
   <input type="text" name="modelo" placeholder="Modelo" style="width:100px;">
+  <input type="text" name="descricao" placeholder="Descrição" style="width:140px;">
   <input type="text" name="filial" placeholder="Filial" style="width:90px;">
   <button class="btn btn-primary" type="submit">Inserir Viatura</button>
 </form>
@@ -25,10 +26,13 @@
       <th>Operação</th>
       <th>Marca</th>
       <th>Modelo</th>
+      <th>Descrição</th>
       <th>Ativo</th>
       <th>Filial</th>
       <th>Protocolo B<br>(dias sem realizar)</th>
       <th>Protocolo C<br>(dias sem realizar)</th>
+      <th>Inspeção B<br>(dias sem verificar)</th>
+      <th>Inspeção C<br>(dias sem verificar)</th>
       {% if can('viaturas:import') %}
         <th>Ações</th>
       {% endif %}
@@ -62,6 +66,7 @@
             {% for v in filtros.modelo %}<option value="{{v}}" {% if request.args.get('modelo')==v %}selected{% endif %}>{{v}}</option>{% endfor %}
           </select>
         </td>
+        <td></td>
         <td>
           <select name="ativo" style="width:60px;">
             <option value="">Todos</option>
@@ -77,11 +82,11 @@
             {% endfor %}
           </select>
         </td>
-        <td colspan="2"></td>
+        <td colspan="4"></td>
         {% if can('viaturas:import') %}
           <td></td>
         {% endif %}
-        <td colspan="11" style="text-align:right;">
+        <td colspan="13" style="text-align:right;">
           <button class="btn" type="submit">Filtrar</button>
           <a class="btn" href="{{ url_for('viaturas') }}">Limpar</a>
           <a class="btn" href="{{ url_for('exportar_viaturas_csv') }}?{{ request.query_string.decode() }}">Exportar Excel</a>
@@ -98,6 +103,7 @@
       <td>{{ v.operacao or "" }}</td>
       <td>{{ v.marca or "" }}</td>
       <td>{{ v.modelo or "" }}</td>
+      <td>{{ v.descricao or "" }}</td>
       <td>{{ "Sim" if v.ativo else "Não" }}</td>
       <td>{{ v.filial or "" }}</td>
       <td>
@@ -123,6 +129,30 @@
         {% else %}
           —
        {% endif %}
+      </td>
+      <td>
+        {% set dias_ib = v.dias_inspecao_b %}
+        {% set freq_ib = v.freq_inspecao_b %}
+        {% if dias_ib is not none %}
+          {{ dias_ib }}{% if freq_ib %}/{{ freq_ib }} dias{% endif %}
+          {% if freq_ib and dias_ib > freq_ib %}
+            <span style="color:red;">(Atrasado)</span>
+          {% endif %}
+        {% else %}
+          —
+        {% endif %}
+      </td>
+      <td>
+        {% set dias_ic = v.dias_inspecao_c %}
+        {% set freq_ic = v.freq_inspecao_c %}
+        {% if dias_ic is not none %}
+          {{ dias_ic }}{% if freq_ic %}/{{ freq_ic }} dias{% endif %}
+          {% if freq_ic and dias_ic > freq_ic %}
+            <span style="color:red;">(Atrasado)</span>
+          {% endif %}
+        {% else %}
+          —
+        {% endif %}
       </td>
       {% if can('viaturas:import') %}
       <td>

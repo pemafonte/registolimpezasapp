@@ -27,6 +27,9 @@
     <label>Modelo
       <input type="text" name="modelo" value="{{ viatura.modelo }}">
     </label>
+    <label>Descrição
+      <input type="text" name="descricao" value="{{ viatura.descricao or '' }}">
+    </label>
     <label>Ativo
       <select name="ativo">
         <option value="1" {% if viatura.ativo == 1 %}selected{% endif %}>Sim</option>

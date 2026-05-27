@@ -12,6 +12,11 @@
       <label>Região
         <input name="regiao" placeholder="ex.: Região Norte" value="{{ user.regiao if user else '' }}">
       </label>
+      <label id="descricao-viaturas-label" style="display:none;">
+        Descrição das viaturas
+        <input name="descricao_viaturas" placeholder="ex.: Autocarro Urbano;Autocarro Suburbano"
+          value="{{ user.descricao_viaturas if user else '' }}">
+      </label>
       {% if not user %}
       <label>Password
         <input name="password" type="password" required>
@@ -52,12 +57,17 @@
     function toggleEmpresaField() {
       var role = document.getElementById('role-select').value;
       var empresaLabel = document.getElementById('empresa-label');
+      var descricaoLabel = document.getElementById('descricao-viaturas-label');
       if (role === 'operador') {
         empresaLabel.style.display = '';
         empresaLabel.querySelector('input').disabled = false;
+        descricaoLabel.style.display = '';
+        descricaoLabel.querySelector('input').disabled = false;
       } else {
         empresaLabel.style.display = 'none';
         empresaLabel.querySelector('input').disabled = true;
+        descricaoLabel.style.display = 'none';
+        descricaoLabel.querySelector('input').disabled = true;
       }
     }
     // Executa ao carregar a página

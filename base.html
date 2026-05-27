@@ -48,6 +48,9 @@
     <a class="btn btn-primary" href="{{ url_for('home') }}">Dashboard</a>
     <a class="btn btn-primary" href="{{ url_for('viaturas') }}">Viaturas</a>
     <a class="btn btn-primary" href="{{ url_for('registos') }}">Registos de Limpeza</a>
+    {% if session.get('role') == 'gestor' %}
+      <a class="btn btn-primary" href="{{ url_for('gestor_verificacoes') }}">Verificações (Gestor)</a>
+    {% endif %}
     {% if session.get('role') in ['admin', 'gestor'] %}
       <a class="btn btn-primary" href="{{ url_for('contabilidade') }}">Contabilidade</a>
     {% endif %}

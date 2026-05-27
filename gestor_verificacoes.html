@@ -1,0 +1,113 @@
+{% extends "base.html" %}
+{% block content %}
+  <h2>Verificações de Limpeza (Gestor)</h2>
+  <p class="muted" style="margin-bottom:1rem;">
+    Inspecione registos pendentes ou altere verificações já registadas (último registo por viatura e protocolo).
+  </p>
+
+  {% macro verif_row(it, checked, show_verif_em) %}
+    {% set rid = it.registo_id %}
+    {% set sk = (it.verificacao_limpeza or '')|lower %}
+    <tr>
+      <td>
+        <input type="checkbox" name="registos" value="{{ rid }}"{% if checked %} checked{% endif %}>
+      </td>
+      <td><b>{{ it.matricula }}</b></td>
+      <td>{{ it.num_frota or "" }}{% if it.descricao %} — {{ it.descricao }}{% endif %}</td>
+      <td>{{ it.protocolo_nome }}</td>
+      <td>{{ it.data_hora }}</td>
+      {% if show_verif_em %}
+        <td>{{ it.verificacao_em or '—' }}</td>
+      {% endif %}
+      <td>
+        <select name="status_{{ rid }}" id="status_{{ rid }}" onchange="toggleComent({{ rid }})">
+          <option value="verificada"{% if sk == 'verificada' %} selected{% endif %}>Verificada</option>
+          <option value="conforme"{% if sk == 'conforme' %} selected{% endif %}>Conforme</option>
+          <option value="não conforme"{% if sk in ['não conforme', 'nao conforme'] %} selected{% endif %}>Não conforme</option>
+        </select>
+      </td>
+      <td>
+        <textarea
+          name="coment_{{ rid }}"
+          id="coment_{{ rid }}"
+          rows="3"
+          style="width:100%;{% if sk not in ['não conforme', 'nao conforme'] %}display:none;{% endif %}"
+          placeholder="Descreva o facto não conforme...">{{ it.comentarios_verificacao or '' }}</textarea>
+      </td>
+    </tr>
+  {% endmacro %}
+
+  {% if not pendentes and not verificados %}
+    <div class="muted">Não existem registos concluídos na sua região.</div>
+  {% else %}
+    <form method="post">
+      {% if pendentes %}
+        <h3 style="margin-top:0;">Pendentes de verificação</h3>
+        <table style="width:100%;border-collapse:collapse;margin-bottom:2rem;">
+          <thead>
+            <tr>
+              <th>Inspecionar</th>
+              <th>Matrícula</th>
+              <th>Viatura</th>
+              <th>Protocolo</th>
+              <th>Data/Hora limpeza</th>
+              <th>Estado</th>
+              <th>Comentário</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for it in pendentes %}
+              {{ verif_row(it, true, false) }}
+            {% endfor %}
+          </tbody>
+        </table>
+      {% else %}
+        <p class="muted">Não há registos pendentes de verificação.</p>
+      {% endif %}
+
+      {% if verificados %}
+        <h3>Já verificados — alterar / reenviar</h3>
+        <p class="muted" style="margin-bottom:0.5rem;">
+          Marque as linhas que pretende atualizar. A data de verificação será renovada ao guardar.
+        </p>
+        <table style="width:100%;border-collapse:collapse;">
+          <thead>
+            <tr>
+              <th>Alterar</th>
+              <th>Matrícula</th>
+              <th>Viatura</th>
+              <th>Protocolo</th>
+              <th>Data/Hora limpeza</th>
+              <th>Verificado em</th>
+              <th>Estado</th>
+              <th>Comentário</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for it in verificados %}
+              {{ verif_row(it, false, true) }}
+            {% endfor %}
+          </tbody>
+        </table>
+      {% endif %}
+
+      <div style="margin-top:1rem;display:flex;gap:10px;align-items:center;">
+        <button class="btn btn-primary" type="submit">Guardar verificações</button>
+        <a class="btn" href="{{ url_for('home') }}">Cancelar</a>
+      </div>
+    </form>
+    <script>
+      function toggleComent(registoId) {
+        const sel = document.getElementById('status_' + registoId);
+        const box = document.getElementById('coment_' + registoId);
+        if (!sel || !box) return;
+        box.style.display = (sel.value === 'não conforme') ? '' : 'none';
+      }
+      document.addEventListener('DOMContentLoaded', () => {
+        {% for it in pendentes + verificados %}
+          toggleComent({{ it.registo_id }});
+        {% endfor %}
+      });
+    </script>
+  {% endif %}
+{% endblock %}

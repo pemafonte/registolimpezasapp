@@ -1,7 +1,9 @@
 from __future__ import annotations
 import os, json, io, csv
+import re
 from pathlib import Path
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
+from zoneinfo import ZoneInfo
 
 from flask import (
     Flask, request, render_template, redirect, url_for, session, send_from_directory, send_file, flash, Response, abort
@@ -30,7 +32,119 @@ APP_SIGNATURE = "Created by Pedro Fonte"
 
 ALLOWED_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".pdf"}
 
-app = Flask(__name__)
+TZ_PT = ZoneInfo("Europe/Lisbon")
+
+
+def now_pt() -> datetime:
+    """Data/hora atual em Portugal continental (WET/WEST automático)."""
+    return datetime.now(TZ_PT)
+
+
+def today_pt() -> date:
+    return now_pt().date()
+
+
+def now_pt_iso() -> str:
+    """ISO sem timezone para gravar na BD (hora civil de Portugal)."""
+    return now_pt().replace(tzinfo=None).isoformat(timespec="seconds")
+
+
+def today_pt_iso() -> str:
+    return today_pt().isoformat()
+
+
+def parse_descricao_viaturas(value: str | None) -> list[str]:
+    """
+    Aceita uma lista separada por vírgulas ou ponto-e-vírgula.
+    Ex.: "Autocarro Urbano;Autocarro Suburbano"
+    """
+    parts = re.split(r"[;,]", value or "")
+    return [p.strip() for p in parts if p and p.strip()]
+
+
+def sql_date_eq_today(col: str, conn) -> tuple[str, str]:
+    ph = sql_placeholder(conn)
+    return f"date({col}) = {ph}", today_pt_iso()
+
+
+def _gestor_ultimos_registos_verificacao(cur, ph, regiao_gestor: str | None, *, apenas_pendentes: bool):
+    """Último registo concluído por viatura+protocolo, filtrado por região e estado de verificação."""
+    where = ["r.estado='concluido'"]
+    params: list[str] = []
+    if regiao_gestor:
+        where.append(f"v.regiao = {ph}")
+        params.append(regiao_gestor)
+    if apenas_pendentes:
+        where.append("(r.verificacao_limpeza IS NULL OR TRIM(r.verificacao_limpeza)='')")
+    else:
+        where.append("(r.verificacao_limpeza IS NOT NULL AND TRIM(r.verificacao_limpeza)<>'')")
+
+    subquery = f"""
+        SELECT r.viatura_id, r.protocolo_id, MAX(r.data_hora) AS ult
+        FROM registos_limpeza r
+        JOIN viaturas v ON v.id = r.viatura_id
+        WHERE {" AND ".join(where)}
+        GROUP BY r.viatura_id, r.protocolo_id
+    """
+    cur.execute(
+        f"""
+        WITH base AS (
+            {subquery}
+        )
+        SELECT
+            r.id AS registo_id,
+            v.matricula,
+            v.num_frota,
+            v.descricao,
+            p.nome AS protocolo_nome,
+            r.data_hora,
+            r.local,
+            r.verificacao_limpeza,
+            r.comentarios_verificacao,
+            r.verificacao_em
+        FROM registos_limpeza r
+        JOIN base b
+          ON b.viatura_id = r.viatura_id
+         AND b.protocolo_id = r.protocolo_id
+         AND b.ult = r.data_hora
+        JOIN viaturas v ON v.id = r.viatura_id
+        JOIN protocolos p ON p.id = r.protocolo_id
+        ORDER BY p.nome, v.matricula
+        """,
+        params,
+    )
+    return [dict(x) for x in cur.fetchall()]
+
+
+def _processar_verificacoes_gestor(cur, ph, selected_ids: list[str]) -> list[str]:
+    erros: list[str] = []
+    for rid_str in selected_ids:
+        try:
+            rid = int(rid_str)
+        except (TypeError, ValueError):
+            continue
+        status = (request.form.get(f"status_{rid_str}") or "").strip()
+        comentario = (request.form.get(f"coment_{rid_str}") or "").strip()
+        if not status:
+            erros.append(f"Registo {rid}: falta o estado da verificação.")
+            continue
+        status_l = status.lower()
+        if status_l in {"não conforme", "nao conforme"} and not comentario:
+            erros.append(f"Registo {rid}: comentário obrigatório para 'não conforme'.")
+            continue
+        comentarios_to_save = comentario if status_l in {"não conforme", "nao conforme"} else None
+        cur.execute(
+            f"""UPDATE registos_limpeza
+                SET verificacao_limpeza={ph},
+                    comentarios_verificacao={ph},
+                    verificacao_em={ph}
+                WHERE id={ph}""",
+            (status, comentarios_to_save, now_pt_iso(), rid),
+        )
+    return erros
+
+
+app = Flask(__name__, template_folder=str(BASE_DIR))
 app.secret_key = os.environ.get("APP_SECRET_KEY", "dev-key-please-change")
 
 UPLOAD_DIR.mkdir(exist_ok=True)
@@ -786,6 +900,7 @@ def ensure_schema_on_boot():
             email TEXT,
             ativo INTEGER DEFAULT 1,
             regiao TEXT,
+            descricao_viaturas TEXT,
             criado_em TEXT DEFAULT CURRENT_TIMESTAMP
     )
 """)
@@ -897,6 +1012,10 @@ def ensure_schema_on_boot():
         try: cur.execute("ALTER TABLE funcionarios ADD COLUMN regiao TEXT")
         except Exception: pass
 
+    if "descricao_viaturas" not in cols:
+        try: cur.execute("ALTER TABLE funcionarios ADD COLUMN descricao_viaturas TEXT")
+        except Exception: pass
+
     # Garantir colunas extra em viaturas
     try:
         cur.execute("PRAGMA table_info(viaturas)")
@@ -945,6 +1064,12 @@ def ensure_schema_on_boot():
             cur.execute("ALTER TABLE funcionarios ADD COLUMN regiao TEXT")
         except Exception:
             pass    
+
+    if "descricao_viaturas" not in cols:
+        try:
+            cur.execute("ALTER TABLE funcionarios ADD COLUMN descricao_viaturas TEXT")
+        except Exception:
+            pass
 
     cur.execute("SELECT COUNT(*) FROM protocolos")
     if cur.fetchone()[0] == 0:
@@ -1010,6 +1135,22 @@ def ensure_comentarios_verificacao_in_registos_limpeza():
     conn.close()
 
 ensure_comentarios_verificacao_in_registos_limpeza()
+
+def ensure_verificacao_em_in_registos_limpeza():
+    """
+    Guarda a data/hora em que o gestor fez a inspeção (verificação),
+    para conseguirmos calcular dias entre inspeções.
+    """
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("PRAGMA table_info(registos_limpeza)")
+    cols = {r["name"] for r in cur.fetchall()}
+    if "verificacao_em" not in cols:
+        cur.execute("ALTER TABLE registos_limpeza ADD COLUMN verificacao_em TEXT")
+        conn.commit()
+    conn.close()
+
+ensure_verificacao_em_in_registos_limpeza()
 
 def ensure_empresa_in_funcionarios():
     conn = get_conn()
@@ -1140,30 +1281,45 @@ def home():
     viaturas_sql = "SELECT id, matricula, descricao, filial, num_frota, regiao FROM viaturas WHERE ativo=1"
     viaturas_params = []
     regiao_user = None
+    desc_list_user: list[str] = []
     if user_role in ("gestor", "operador"):
-        cur.execute(f"SELECT regiao FROM funcionarios WHERE id={ph}", (user_id,))
+        cur.execute(f"SELECT regiao, descricao_viaturas FROM funcionarios WHERE id={ph}", (user_id,))
         row = cur.fetchone()
         regiao_user = (row["regiao"] or "").strip() if row and row["regiao"] else None
         if regiao_user:
             viaturas_sql += f" AND regiao = {ph}"
             viaturas_params.append(regiao_user)
+        elif user_role == "operador":
+            descricao_user = (row["descricao_viaturas"] or "").strip() if row and row["descricao_viaturas"] else ""
+            desc_list_user = parse_descricao_viaturas(descricao_user)
+            if desc_list_user:
+                placeholders = ",".join([ph] * len(desc_list_user))
+                viaturas_sql += f" AND COALESCE(descricao,'') IN ({placeholders})"
+                viaturas_params.extend(desc_list_user)
     viaturas_sql += " ORDER BY filial, matricula"
     cur.execute(viaturas_sql, viaturas_params)
     viaturas = [dict(r) for r in cur.fetchall()]
 
-    # Funções de data para cada motor
+    # Datas de referência em Portugal continental (parâmetros, não relógio do servidor)
+    today_str = today_pt_iso()
+    week_start_str = (today_pt() - timedelta(days=6)).isoformat()
+    month_str = today_pt().strftime("%Y-%m")
     if is_postgres(conn):
-        dt_now = "CURRENT_DATE"
         dt_fmt = "TO_CHAR(r.data_hora, 'YYYY-MM')"
-        dt_eq = "= TO_CHAR(CURRENT_DATE, 'YYYY-MM')"
-        dt_today = "= CURRENT_DATE"
-        dt_7days = ">= CURRENT_DATE - INTERVAL '6 days'"
+        dt_today_sql = f"date(r.data_hora) = {ph}"
+        dt_today_param = today_str
+        dt_7days_sql = f"date(r.data_hora) >= {ph}"
+        dt_7days_param = week_start_str
+        dt_eq_sql = f"{dt_fmt} = {ph}"
+        dt_eq_param = month_str
     else:
-        dt_now = "date('now','localtime')"
         dt_fmt = "strftime('%Y-%m', r.data_hora)"
-        dt_eq = "= strftime('%Y-%m', 'now','localtime')"
-        dt_today = "= date('now','localtime')"
-        dt_7days = ">= date('now','-6 days','localtime')"
+        dt_today_sql = f"date(r.data_hora) = {ph}"
+        dt_today_param = today_str
+        dt_7days_sql = f"date(r.data_hora) >= {ph}"
+        dt_7days_param = week_start_str
+        dt_eq_sql = f"{dt_fmt} = {ph}"
+        dt_eq_param = month_str
 
     # Última limpeza por viatura/protocolo (filtrada por região)
     last_map_sql = """
@@ -1200,9 +1356,9 @@ def home():
         SELECT r.viatura_id, COUNT(*) as n
         FROM registos_limpeza r
         JOIN viaturas v ON v.id = r.viatura_id
-        WHERE date(r.data_hora){dt_today}
+        WHERE {dt_today_sql}
     """
-    limpezas_hoje_params = []
+    limpezas_hoje_params = [dt_today_param]
     if regiao_gestor:
         limpezas_hoje_sql += f" AND v.regiao = {ph}"
         limpezas_hoje_params.append(regiao_gestor)
@@ -1217,9 +1373,9 @@ def home():
         SELECT r.viatura_id, COUNT(*) as n
         FROM registos_limpeza r
         JOIN viaturas v ON v.id = r.viatura_id
-        WHERE date(r.data_hora){dt_today}
+        WHERE {dt_today_sql}
     """
-    limpas_hoje_params = []
+    limpas_hoje_params = [dt_today_param]
     if user_role in ("gestor", "operador"):
         if regiao_user:
             limpas_hoje_sql += f" AND v.regiao = {ph}"
@@ -1237,9 +1393,9 @@ def home():
         SELECT COUNT(*) AS n
         FROM registos_limpeza r
         JOIN viaturas v ON v.id = r.viatura_id
-        WHERE date(r.data_hora){dt_today}
+        WHERE {dt_today_sql}
     """
-    kpi_today_params = []
+    kpi_today_params = [dt_today_param]
     if user_role in ("gestor", "operador"):
         if regiao_user:
             kpi_today_sql += f" AND v.regiao = {ph}"
@@ -1252,9 +1408,9 @@ def home():
         SELECT COUNT(DISTINCT r.viatura_id) AS n
         FROM registos_limpeza r
         JOIN viaturas v ON v.id = r.viatura_id
-        WHERE date(r.data_hora){dt_today}
+        WHERE {dt_today_sql}
     """
-    kpi_today_veh_params = []
+    kpi_today_veh_params = [dt_today_param]
     if user_role in ("gestor", "operador"):
         if regiao_user:
             kpi_today_veh_sql += f" AND v.regiao = {ph}"
@@ -1267,9 +1423,9 @@ def home():
         SELECT COUNT(*) AS n
         FROM registos_limpeza r
         JOIN viaturas v ON v.id = r.viatura_id
-        WHERE date(r.data_hora){dt_today}
+        WHERE {dt_today_sql}
     """
-    kpi_total_limpezas_params = []
+    kpi_total_limpezas_params = [dt_today_param]
     if user_role in ("gestor", "operador"):
         if regiao_user:
             kpi_total_limpezas_sql += f" AND v.regiao = {ph}"
@@ -1282,9 +1438,9 @@ def home():
         SELECT COUNT(*) AS n
         FROM registos_limpeza r
         JOIN viaturas v ON v.id = r.viatura_id
-        WHERE date(r.data_hora) {dt_7days}
+        WHERE {dt_7days_sql}
     """
-    kpi_week_params = []
+    kpi_week_params = [dt_7days_param]
     if regiao_gestor:
         kpi_week_sql += f" AND v.regiao = {ph}"
         kpi_week_params.append(regiao_gestor)
@@ -1296,9 +1452,9 @@ def home():
         SELECT COUNT(*) AS n
         FROM registos_limpeza r
         JOIN viaturas v ON v.id = r.viatura_id
-        WHERE {dt_fmt} {dt_eq}
+        WHERE {dt_eq_sql}
     """
-    kpi_month_params = []
+    kpi_month_params = [dt_eq_param]
     if regiao_gestor:
         kpi_month_sql += f" AND v.regiao = {ph}"
         kpi_month_params.append(regiao_gestor)
@@ -1350,7 +1506,7 @@ def home():
     # (continua igual ao teu original a partir daqui)
 
     # Média de dias desde última limpeza
-    hoje = date.today()
+    hoje = today_pt()
     dias_por_viatura = []
     for v in viaturas:
         iso = last_any.get(v["id"])
@@ -1478,14 +1634,14 @@ def home():
     }
 
     # Viaturas limpas por protocolo (hoje, filtradas por região se gestor)
-    viaturas_proto_sql = """
+    viaturas_proto_sql = f"""
         SELECT r.protocolo_id, p.nome as protocolo_nome, v.matricula, v.num_frota, v.descricao
         FROM registos_limpeza r
         JOIN viaturas v ON v.id = r.viatura_id
         JOIN protocolos p ON p.id = r.protocolo_id
-        WHERE date(r.data_hora) = date('now','localtime')
+        WHERE {dt_today_sql}
     """
-    viaturas_proto_params = []
+    viaturas_proto_params = [dt_today_param]
     if regiao_gestor:
         viaturas_proto_sql += " AND v.regiao = ?"
         viaturas_proto_params.append(regiao_gestor)
@@ -1507,14 +1663,15 @@ def home():
     pedidos_pendentes = []
     if user_role in ["admin", "gestor"]:
         gestor_id = user_id
-        cur.execute("""
+        ped_hoje_sql, ped_hoje_val = sql_date_eq_today("pa.data_pedido", conn)
+        cur.execute(f"""
             SELECT pa.id, v.matricula, v.num_frota, f.nome as operador
             FROM pedidos_autorizacao pa
             JOIN viaturas v ON v.id = pa.viatura_id
             JOIN funcionarios f ON f.id = pa.funcionario_id
-            WHERE pa.validado=0 AND pa.destinatario_id=? AND date(pa.data_pedido)=date('now','localtime')
+            WHERE pa.validado=0 AND pa.destinatario_id={ph} AND {ped_hoje_sql}
             ORDER BY pa.data_pedido DESC
-        """, (gestor_id,))
+        """, (gestor_id, ped_hoje_val))
         pedidos_pendentes = [dict(r) for r in cur.fetchall()]
 
     conn.close()
@@ -1542,25 +1699,15 @@ def pedidos_autorizacao():
     conn = get_conn()
     cur = conn.cursor()
     ph = sql_placeholder(conn)
-    # Compatível com SQLite e PostgreSQL para data de hoje
-    if is_postgres(conn):
-        cur.execute(f"""
-            SELECT pa.id, v.matricula, v.num_frota, f.nome as operador
-            FROM pedidos_autorizacao pa
-            JOIN viaturas v ON v.id = pa.viatura_id
-            JOIN funcionarios f ON f.id = pa.funcionario_id
-            WHERE pa.validado=0 AND pa.destinatario_id={ph} AND pa.data_pedido::date = CURRENT_DATE
-            ORDER BY pa.data_pedido DESC
-        """, (gestor_id,))
-    else:
-        cur.execute(f"""
-            SELECT pa.id, v.matricula, v.num_frota, f.nome as operador
-            FROM pedidos_autorizacao pa
-            JOIN viaturas v ON v.id = pa.viatura_id
-            JOIN funcionarios f ON f.id = pa.funcionario_id
-            WHERE pa.validado=0 AND pa.destinatario_id={ph} AND date(pa.data_pedido)=date('now','localtime')
-            ORDER BY pa.data_pedido DESC
-        """, (gestor_id,))
+    ped_hoje_sql, ped_hoje_val = sql_date_eq_today("pa.data_pedido", conn)
+    cur.execute(f"""
+        SELECT pa.id, v.matricula, v.num_frota, f.nome as operador
+        FROM pedidos_autorizacao pa
+        JOIN viaturas v ON v.id = pa.viatura_id
+        JOIN funcionarios f ON f.id = pa.funcionario_id
+        WHERE pa.validado=0 AND pa.destinatario_id={ph} AND {ped_hoje_sql}
+        ORDER BY pa.data_pedido DESC
+    """, (gestor_id, ped_hoje_val))
     pedidos = [dict(r) for r in cur.fetchall()]
     conn.close()
     return render_template("pedidos_autorizacao.html", pedidos=pedidos, signature=APP_SIGNATURE)
@@ -1592,6 +1739,7 @@ def exportar_viaturas_csv():
     q_matricula = (request.args.get("matricula") or "").strip()
     q_num_frota = (request.args.get("num_frota") or "").strip()
     f_regiao = (request.args.get("regiao") or "").strip()
+    access_desc_list: list[str] = []
     f_operacao = (request.args.get("operacao") or "").strip()
     f_marca = (request.args.get("marca") or "").strip()
     f_modelo = (request.args.get("modelo") or "").strip()
@@ -1602,6 +1750,20 @@ def exportar_viaturas_csv():
     ph = sql_placeholder(conn)
     where = ["1=1"]
     params = []
+
+    # Restrições de acesso pelo perfil
+    if session.get("role") in ("gestor", "operador"):
+        cur.execute(
+            f"SELECT regiao, descricao_viaturas FROM funcionarios WHERE id={ph}",
+            (session.get("user_id"),),
+        )
+        row = cur.fetchone()
+        regiao_user = (row["regiao"] or "").strip() if row else ""
+        if regiao_user:
+            f_regiao = regiao_user
+        elif session.get("role") == "operador":
+            descricao_user = (row["descricao_viaturas"] or "").strip() if row and row["descricao_viaturas"] else ""
+            access_desc_list = parse_descricao_viaturas(descricao_user)
     if q_matricula:
         where.append(f"v.matricula LIKE {ph}")
         params.append(f"%{q_matricula}%")
@@ -1611,6 +1773,10 @@ def exportar_viaturas_csv():
     if f_regiao:
         where.append(f"COALESCE(v.regiao,'') = {ph}")
         params.append(f_regiao)
+    if access_desc_list:
+        placeholders = ",".join([ph] * len(access_desc_list))
+        where.append(f"COALESCE(v.descricao,'') IN ({placeholders})")
+        params.extend(access_desc_list)
     if f_operacao:
         where.append(f"COALESCE(v.operacao,'') = {ph}")
         params.append(f_operacao)
@@ -1671,14 +1837,23 @@ def viaturas():
     f_tipo = (request.args.get("tipo_protocolo") or "").strip()
     f_ativo = (request.args.get("ativo") or "").strip()
     f_filial = (request.args.get("filial") or "").strip()
+    f_desc_list: list[str] = []
 
     # Se for gestor, força filtro pela sua região
     if session.get("role") in ("gestor", "operador"):
-        cur.execute(f"SELECT regiao FROM funcionarios WHERE id={ph}", (session.get("user_id"),))
+        cur.execute(
+            f"SELECT regiao, descricao_viaturas FROM funcionarios WHERE id={ph}",
+            (session.get("user_id"),),
+        )
         row = cur.fetchone()
         regiao_user = (row["regiao"] or "").strip() if row else ""
         if regiao_user:
             f_regiao = regiao_user
+        else:
+            # Operador com região vazia: restringir por lista de descrições
+            if session.get("role") == "operador":
+                descricao_user = (row["descricao_viaturas"] or "").strip() if row and row["descricao_viaturas"] else ""
+                f_desc_list = parse_descricao_viaturas(descricao_user)
 
     if request.method == "POST":
         matricula = (request.form.get("matricula") or "").strip()
@@ -1722,6 +1897,10 @@ def viaturas():
         where.append(f"(v.numero_frota = {ph} OR v.num_frota = {ph})"); params.extend([q_num_frota, q_num_frota])
     if f_regiao:
         where.append(f"COALESCE(v.regiao,'') = {ph}"); params.append(f_regiao)
+    if f_desc_list:
+        placeholders = ",".join([ph] * len(f_desc_list))
+        where.append(f"COALESCE(v.descricao,'') IN ({placeholders})")
+        params.extend(f_desc_list)
     if f_operacao:
         where.append(f"COALESCE(v.operacao,'') = {ph}"); params.append(f_operacao)
     if f_marca:
@@ -1767,14 +1946,17 @@ def viaturas():
     cur.execute("SELECT id, nome, frequencia_dias FROM protocolos WHERE UPPER(nome) IN ('PROTOCOLO B', 'PROTOCOLO C')")
     protocolos_bc = {r["nome"].upper(): dict(r) for r in cur.fetchall()}
 
-    hoje = date.today()
+    hoje = today_pt()
     for v in vs:
         v["tem_atraso"] = False
         for nome in ("PROTOCOLO B", "PROTOCOLO C"):
+            ins_key = "b" if nome.endswith("B") else "c"
             prot = protocolos_bc.get(nome)
             if not prot:
                 v[f"dias_{nome.replace(' ', '_').lower()}"] = None
                 v[f"freq_{nome.replace(' ', '_').lower()}"] = None
+                v[f"dias_inspecao_{ins_key}"] = None
+                v[f"freq_inspecao_{ins_key}"] = None
                 continue
             cur.execute(f"""
                 SELECT MAX(date(r.data_hora)) as ult
@@ -1788,6 +1970,24 @@ def viaturas():
                 dias = None
             v[f"dias_{nome.replace(' ', '_').lower()}"] = dias
             v[f"freq_{nome.replace(' ', '_').lower()}"] = prot["frequencia_dias"]
+
+            # Dias desde a última inspeção (verificação registada pelo gestor)
+            cur.execute(f"""
+                SELECT MAX(date(COALESCE(r.verificacao_em, r.data_hora))) as ult
+                FROM registos_limpeza r
+                WHERE r.viatura_id={ph}
+                  AND r.protocolo_id={ph}
+                  AND r.verificacao_limpeza IS NOT NULL
+                  AND TRIM(r.verificacao_limpeza) <> ''
+            """, (v["id"], prot["id"]))
+            ult_i = cur.fetchone()["ult"]
+            if ult_i:
+                dias_inspecao = (hoje - datetime.fromisoformat(ult_i).date()).days
+            else:
+                dias_inspecao = None
+            v[f"dias_inspecao_{ins_key}"] = dias_inspecao
+            v[f"freq_inspecao_{ins_key}"] = prot["frequencia_dias"]
+
             # Verifica atraso
             if dias is not None and prot["frequencia_dias"] is not None and dias > prot["frequencia_dias"]:
                 v["tem_atraso"] = True
@@ -1820,8 +2020,27 @@ def verificar_limpeza(registo_id):
     cur = conn.cursor()
     ph = sql_placeholder(conn)
     if request.method == "POST":
-        verificacao = request.form.get("verificacao_limpeza")
-        cur.execute(f"UPDATE registos_limpeza SET verificacao_limpeza={ph} WHERE id={ph}", (verificacao, registo_id))
+        verificacao = (request.form.get("verificacao_limpeza") or "").strip()
+        comentarios = (request.form.get("comentarios_verificacao") or "").strip()
+        if not verificacao:
+            flash("Selecione o tipo de verificação.", "danger")
+            conn.close()
+            return redirect(url_for("verificar_limpeza", registo_id=registo_id))
+
+        if verificacao.lower() in {"não conforme", "nao conforme"} and not comentarios:
+            flash("Indique o comentário quando a verificação é 'não conforme'.", "danger")
+            conn.close()
+            return redirect(url_for("verificar_limpeza", registo_id=registo_id))
+
+        comentarios_to_save = comentarios if verificacao.lower() in {"não conforme", "nao conforme"} else None
+        cur.execute(
+            f"""UPDATE registos_limpeza
+                SET verificacao_limpeza={ph},
+                    comentarios_verificacao={ph},
+                    verificacao_em={ph}
+                WHERE id={ph}""",
+            (verificacao, comentarios_to_save, now_pt_iso(), registo_id),
+        )
         conn.commit()
         conn.close()
         flash("Verificação de limpeza registada.", "success")
@@ -1833,6 +2052,54 @@ def verificar_limpeza(registo_id):
         flash("Registo não encontrado.", "danger")
         return redirect(url_for("registos"))
     return render_template("verificar_limpeza.html", registo=registo, signature=APP_SIGNATURE)
+
+@app.route("/gestor/verificacoes", methods=["GET", "POST"])
+@login_required
+@require_perm("dashboard:view")
+def gestor_verificacoes():
+    # A funcionalidade pedida é exclusiva ao perfil gestor.
+    if session.get("role") != "gestor":
+        flash("Apenas o perfil gestor pode registar verificações em lote.", "danger")
+        return redirect(url_for("home"))
+
+    conn = get_conn()
+    cur = conn.cursor()
+    ph = sql_placeholder(conn)
+
+    # Região do gestor
+    cur.execute("SELECT regiao FROM funcionarios WHERE id=?", (session.get("user_id"),))
+    row = cur.fetchone()
+    regiao_gestor = (row["regiao"] or "").strip() if row else None
+
+    if request.method == "POST":
+        selected = request.form.getlist("registos")
+        if not selected:
+            flash("Selecione pelo menos um registo para inspecionar ou alterar.", "warning")
+            conn.close()
+            return redirect(url_for("gestor_verificacoes"))
+
+        erros = _processar_verificacoes_gestor(cur, ph, selected)
+        if erros:
+            conn.rollback()
+            conn.close()
+            flash(" | ".join(erros), "danger")
+            return redirect(url_for("gestor_verificacoes"))
+
+        conn.commit()
+        conn.close()
+        flash("Verificações registadas/atualizadas com sucesso.", "success")
+        return redirect(url_for("gestor_verificacoes"))
+
+    pendentes = _gestor_ultimos_registos_verificacao(cur, ph, regiao_gestor, apenas_pendentes=True)
+    verificados = _gestor_ultimos_registos_verificacao(cur, ph, regiao_gestor, apenas_pendentes=False)
+    conn.close()
+
+    return render_template(
+        "gestor_verificacoes.html",
+        pendentes=pendentes,
+        verificados=verificados,
+        signature=APP_SIGNATURE,
+    )
 
 @app.route("/registos/<int:rid>", methods=["GET", "POST"])
 @login_required
@@ -1851,7 +2118,7 @@ def registo_detalhe(rid):
         # Anexos
         files = request.files.getlist("ficheiros")
         if files:
-            day_dir = UPLOAD_DIR / datetime.now().strftime("%Y-%m-%d")
+            day_dir = UPLOAD_DIR / now_pt().strftime("%Y-%m-%d")
             day_dir.mkdir(parents=True, exist_ok=True)
             for f in files:
                 if not f or f.filename == "": continue
@@ -1897,17 +2164,18 @@ def editar_viatura(viatura_id):
     ph = sql_placeholder(conn)
     if request.method == "POST":
         regiao = request.form.get("regiao") or None
+        descricao = (request.form.get("descricao") or "").strip() or None
         verificacao_limpeza = request.form.get("verificacao_limpeza") or None
         # Só admin pode alterar a região
         if session.get("role") == "admin":
             cur.execute(
-                f"UPDATE viaturas SET regiao={ph}, verificacao_limpeza={ph} WHERE id={ph}",
-                (regiao, verificacao_limpeza, viatura_id)
+                f"UPDATE viaturas SET regiao={ph}, descricao={ph}, verificacao_limpeza={ph} WHERE id={ph}",
+                (regiao, descricao, verificacao_limpeza, viatura_id)
             )
         else:
             cur.execute(
-                f"UPDATE viaturas SET verificacao_limpeza={ph} WHERE id={ph}",
-                (verificacao_limpeza, viatura_id)
+                f"UPDATE viaturas SET descricao={ph}, verificacao_limpeza={ph} WHERE id={ph}",
+                (descricao, verificacao_limpeza, viatura_id)
             )
         conn.commit()
         conn.close()
@@ -2119,7 +2387,7 @@ def exportar_viaturas_excel():
     rows = [dict(r) for r in cur.fetchall()]
     conn.close()
     df = pd.DataFrame(rows)
-    fname = EXPORT_DIR / f"viaturas_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+    fname = EXPORT_DIR / f"viaturas_{now_pt().strftime('%Y%m%d_%H%M%S')}.xlsx"
     df.to_excel(fname, index=False, sheet_name="Viaturas")
     return send_file(fname, as_attachment=True)
 # -----------------------------------------------------------------------------
@@ -2366,12 +2634,32 @@ def solicitar_autorizacao(viatura_id):
     funcionario_id = session.get("user_id")
     conn = get_conn()
     cur = conn.cursor()
+    ph = sql_placeholder(conn)
 
-    # Obter região e número de frota da viatura
-    cur.execute("SELECT regiao, num_frota FROM viaturas WHERE id=?", (viatura_id,))
+    # Obter região, descrição e número de frota da viatura
+    cur.execute("SELECT regiao, descricao, num_frota FROM viaturas WHERE id=?", (viatura_id,))
     row = cur.fetchone()
     regiao = (row["regiao"] or "").strip() if row and row["regiao"] else None
+    v_desc = (row["descricao"] or "").strip() if row and row["descricao"] else ""
     num_frota = row["num_frota"] if row else None
+
+    # Enforce de acesso: operador pode solicitar autorização apenas nas viaturas permitidas
+    if session.get("role") == "operador":
+        cur.execute("SELECT regiao, descricao_viaturas FROM funcionarios WHERE id=?", (funcionario_id,))
+        prof = cur.fetchone()
+        prof_regiao = (prof["regiao"] or "").strip() if prof and prof["regiao"] else None
+        if prof_regiao:
+            if regiao != prof_regiao:
+                flash("Sem permissão para solicitar autorização nesta viatura.", "danger")
+                conn.close()
+                return redirect(url_for("novo_registo"))
+        else:
+            prof_desc = (prof["descricao_viaturas"] or "").strip() if prof and prof["descricao_viaturas"] else ""
+            prof_desc_list = parse_descricao_viaturas(prof_desc)
+            if prof_desc_list and v_desc not in prof_desc_list:
+                flash("Sem permissão para solicitar autorização nesta viatura.", "danger")
+                conn.close()
+                return redirect(url_for("novo_registo"))
 
     destinatario_id = None
     if regiao:
@@ -2386,10 +2674,11 @@ def solicitar_autorizacao(viatura_id):
         return redirect(url_for("novo_registo"))
 
     # Verifica se já existe pedido pendente hoje
-    cur.execute("""
+    hoje_sql, hoje_val = sql_date_eq_today("data_pedido", conn)
+    cur.execute(f"""
         SELECT 1 FROM pedidos_autorizacao
-        WHERE viatura_id=? AND funcionario_id=? AND date(data_pedido)=date('now','localtime') AND validado=0
-    """, (viatura_id, funcionario_id))
+        WHERE viatura_id={ph} AND funcionario_id={ph} AND {hoje_sql} AND validado=0
+    """, (viatura_id, funcionario_id, hoje_val))
     if not cur.fetchone():
         cur.execute(
             "INSERT INTO pedidos_autorizacao (viatura_id, num_frota, funcionario_id, destinatario_id) VALUES (?,?,?,?)",
@@ -2416,10 +2705,14 @@ def novo_registo():
     user_id = session.get("user_id")
     user_role = session.get("role")
     regiao_operador = None
+    desc_list_operador: list[str] = []
     if user_role in ("operador", "gestor"):
-        cur.execute("SELECT regiao FROM funcionarios WHERE id=?", (user_id,))
+        cur.execute("SELECT regiao, descricao_viaturas FROM funcionarios WHERE id=?", (user_id,))
         row = cur.fetchone()
         regiao_operador = (row["regiao"] or "").strip() if row and row["regiao"] else None
+        if user_role == "operador" and not regiao_operador:
+            descricao_user = (row["descricao_viaturas"] or "").strip() if row and row["descricao_viaturas"] else ""
+            desc_list_operador = parse_descricao_viaturas(descricao_user)
 
     # GET: mostra o formulário
     if request.method == "GET":
@@ -2429,21 +2722,26 @@ def novo_registo():
         if regiao_operador:
             viaturas_sql += " AND regiao = ?"
             viaturas_params.append(regiao_operador)
+        elif desc_list_operador:
+            placeholders = ",".join(["?"] * len(desc_list_operador))
+            viaturas_sql += f" AND COALESCE(descricao,'') IN ({placeholders})"
+            viaturas_params.extend(desc_list_operador)
         viaturas_sql += " ORDER BY matricula"
         cur.execute(viaturas_sql, viaturas_params)
         vs = [dict(row) for row in cur.fetchall()]
 
         cur.execute("SELECT id, nome, passos_json, frequencia_dias FROM protocolos WHERE ativo=1 ORDER BY nome")
         ps = [dict(row) for row in cur.fetchall()]
-        cur.execute("SELECT DISTINCT viatura_id FROM registos_limpeza WHERE date(data_hora) = date('now','localtime')")
+        hoje_val = today_pt_iso()
+        cur.execute("SELECT DISTINCT viatura_id FROM registos_limpeza WHERE date(data_hora) = ?", (hoje_val,))
         limpas_hoje = {r["viatura_id"] for r in cur.fetchall()}
         cur.execute("SELECT id, nome FROM funcionarios WHERE role='gestor' AND ativo=1")
         gestores = [dict(row) for row in cur.fetchall()]
         # Viaturas autorizadas a limpeza extra hoje
         cur.execute("""
             SELECT viatura_id FROM pedidos_autorizacao
-            WHERE validado=1 AND date(data_pedido)=date('now','localtime')
-        """)
+            WHERE validado=1 AND date(data_pedido)=?
+        """, (hoje_val,))
         viaturas_autorizadas = {r["viatura_id"] for r in cur.fetchall()}
         conn.close()
         limpa_hoje_map = {v["id"]: (v["id"] in limpas_hoje) for v in vs}
@@ -2463,19 +2761,41 @@ def novo_registo():
     estado = request.form.get("estado", "concluido")
     observacoes = (request.form.get("observacoes") or "").strip()
     local = (request.form.get("local") or "").strip()
-    hora_inicio = datetime.now().strftime("%H:%M")
+    hora_inicio = now_pt().strftime("%H:%M")
     funcionario_id = session.get("user_id")
+    hoje_val = today_pt_iso()
 
     if not (viatura_id and protocolo_id):
         flash("Selecione viatura e protocolo.", "danger")
         conn.close()
         return redirect(url_for("novo_registo"))
+
+    # Enforce de acesso: operador pode criar registos apenas nas viaturas permitidas
+    if user_role == "operador":
+        cur.execute("SELECT regiao, descricao FROM viaturas WHERE id=?", (viatura_id,))
+        vrow = cur.fetchone()
+        if not vrow:
+            flash("Viatura não encontrada.", "danger")
+            conn.close()
+            return redirect(url_for("novo_registo"))
+        v_regiao = (vrow["regiao"] or "").strip()
+        v_desc = (vrow["descricao"] or "").strip()
+        if regiao_operador:
+            if v_regiao != regiao_operador:
+                flash("Sem permissão para esta viatura.", "danger")
+                conn.close()
+                return redirect(url_for("novo_registo"))
+        elif desc_list_operador:
+            if v_desc not in desc_list_operador:
+                flash("Sem permissão para esta viatura.", "danger")
+                conn.close()
+                return redirect(url_for("novo_registo"))
     
     # Verifica se já foi limpa hoje
     cur.execute("""
         SELECT COUNT(*) FROM registos_limpeza
-        WHERE viatura_id = ? AND date(data_hora) = date('now','localtime')
-    """, (viatura_id,))
+        WHERE viatura_id = ? AND date(data_hora) = ?
+    """, (viatura_id, hoje_val))
     ja_limpo_hoje = cur.fetchone()[0] > 0
 
     pedido_autorizado = pedido_autorizado_hoje(viatura_id, funcionario_id)
@@ -2486,9 +2806,9 @@ def novo_registo():
             SELECT f.nome
             FROM pedidos_autorizacao pa
             JOIN funcionarios f ON f.id = pa.destinatario_id
-            WHERE pa.viatura_id=? AND pa.funcionario_id=? AND pa.validado=1 AND date(pa.data_pedido)=date('now','localtime')
+            WHERE pa.viatura_id=? AND pa.funcionario_id=? AND pa.validado=1 AND date(pa.data_pedido)=?
             ORDER BY pa.data_pedido DESC LIMIT 1
-        """, (viatura_id, funcionario_id))
+        """, (viatura_id, funcionario_id, hoje_val))
         row = cur.fetchone()
         responsavel_autorizacao = row["nome"] if row else None
 
@@ -2504,18 +2824,28 @@ def novo_registo():
     # Se já foi limpa hoje e não tem autorização, pede autorização
     if ja_limpo_hoje and not pedido_autorizado:
         flash("Viatura já efetuou limpeza hoje, solicite autorização para limpeza extra.", "warning")
-        cur.execute("SELECT id, matricula, descricao, num_frota FROM viaturas WHERE ativo=1 ORDER BY matricula")
+        viaturas_sql = "SELECT id, matricula, descricao, num_frota FROM viaturas WHERE ativo=1"
+        viaturas_params = []
+        if regiao_operador:
+            viaturas_sql += " AND regiao = ?"
+            viaturas_params.append(regiao_operador)
+        elif desc_list_operador:
+            placeholders = ",".join(["?"] * len(desc_list_operador))
+            viaturas_sql += f" AND COALESCE(descricao,'') IN ({placeholders})"
+            viaturas_params.extend(desc_list_operador)
+        viaturas_sql += " ORDER BY matricula"
+        cur.execute(viaturas_sql, viaturas_params)
         vs = [dict(row) for row in cur.fetchall()]
         cur.execute("SELECT id, nome FROM protocolos WHERE ativo=1 ORDER BY nome")
         ps = [dict(row) for row in cur.fetchall()]
-        cur.execute("SELECT DISTINCT viatura_id FROM registos_limpeza WHERE date(data_hora) = date('now','localtime')")
+        cur.execute("SELECT DISTINCT viatura_id FROM registos_limpeza WHERE date(data_hora) = ?", (hoje_val,))
         limpas_hoje = {r["viatura_id"] for r in cur.fetchall()}
         cur.execute("SELECT id, nome FROM funcionarios WHERE role='gestor' AND ativo=1")
         gestores = [dict(row) for row in cur.fetchall()]
         cur.execute("""
             SELECT viatura_id FROM pedidos_autorizacao
-            WHERE validado=1 AND date(data_pedido)=date('now','localtime')
-        """)
+            WHERE validado=1 AND date(data_pedido)=?
+        """, (hoje_val,))
         viaturas_autorizadas = {r["viatura_id"] for r in cur.fetchall()}
         conn.close()
         limpa_hoje_map = {v["id"]: (v["id"] in limpas_hoje) for v in vs}
@@ -2544,7 +2874,7 @@ def novo_registo():
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, (
         viatura_id, protocolo_id, funcionario_id,
-        datetime.now().isoformat(timespec="seconds"),
+        now_pt_iso(),
         estado, observacoes, (local or None),
         (hora_inicio or None), None,
         extra_autorizada, responsavel_autorizacao,
@@ -2564,7 +2894,7 @@ def novo_registo():
     # anexos
     files = request.files.getlist("ficheiros")
     if files:
-        day_dir = UPLOAD_DIR / datetime.now().strftime("%Y-%m-%d")
+        day_dir = UPLOAD_DIR / now_pt().strftime("%Y-%m-%d")
         day_dir.mkdir(parents=True, exist_ok=True)
         for f in files:
             if not f or f.filename == "": continue
@@ -2584,8 +2914,8 @@ def novo_registo():
     if pedido_autorizado:
         cur.execute("""
             DELETE FROM pedidos_autorizacao
-            WHERE viatura_id=? AND funcionario_id=? AND validado=1 AND date(data_pedido)=date('now','localtime')
-        """, (viatura_id, funcionario_id))
+            WHERE viatura_id=? AND funcionario_id=? AND validado=1 AND date(data_pedido)=?
+        """, (viatura_id, funcionario_id, hoje_val))
     conn.commit()
     conn.close()
     flash(f"Registo #{registo_id} criado com sucesso.", "info")
@@ -2596,8 +2926,8 @@ def pedido_autorizado_hoje(viatura_id, funcionario_id):
     cur = conn.cursor()
     cur.execute("""
         SELECT 1 FROM pedidos_autorizacao
-         WHERE viatura_id=? AND funcionario_id=? AND validado=1 AND date(data_pedido)=date('now','localtime')
-    """, (viatura_id, funcionario_id))
+         WHERE viatura_id=? AND funcionario_id=? AND validado=1 AND date(data_pedido)=?
+    """, (viatura_id, funcionario_id, today_pt_iso()))
     res = cur.fetchone()
     conn.close()
     return bool(res)
@@ -2626,7 +2956,7 @@ def registos_em_progresso():
 @login_required
 @require_perm("registos:edit")
 def finalizar_registo(registo_id):
-    hora_fim = datetime.now().strftime("%H:%M")
+    hora_fim = now_pt().strftime("%H:%M")
     conn = get_conn()
     cur = conn.cursor()
     cur.execute("""
@@ -2764,7 +3094,7 @@ def exportar_contabilidade_excel():
     ]
     df = df[cols]
 
-    fname = EXPORT_DIR / f"contabilidade_{mes or 'todos'}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+    fname = EXPORT_DIR / f"contabilidade_{mes or 'todos'}_{now_pt().strftime('%Y%m%d_%H%M%S')}.xlsx"
     df.to_excel(fname, index=False, sheet_name="Contabilidade")
     return send_file(fname, as_attachment=True)
 # -----------------------------------------------------------------------------
@@ -2858,6 +3188,7 @@ def admin_user_new():
         ativo = 1 if request.form.get("ativo") == "1" else 0
         regiao = (request.form.get("regiao") or "").strip()
         empresa = (request.form.get("empresa") or "").strip() if role == "operador" else None
+        descricao_viaturas = (request.form.get("descricao_viaturas") or "").strip() if role == "operador" else None
         password = request.form.get("password") or ""
         if not username or not password:
             flash("Username e password são obrigatórios.", "danger")
@@ -2865,8 +3196,8 @@ def admin_user_new():
         conn = get_conn(); cur = conn.cursor()
         try:
             cur.execute(
-                "INSERT INTO funcionarios (username, nome, role, ativo, regiao, password, email, empresa) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                (username, nome or username, role, ativo, regiao, generate_password_hash(password), email, empresa)
+                "INSERT INTO funcionarios (username, nome, role, ativo, regiao, descricao_viaturas, password, email, empresa) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (username, nome or username, role, ativo, regiao, descricao_viaturas, generate_password_hash(password), email, empresa)
             )
             conn.commit(); flash("Utilizador criado.", "success")
             return redirect(url_for("admin_users"))
@@ -2890,13 +3221,14 @@ def admin_user_edit(user_id):
         ativo = 1 if request.form.get("ativo") == "1" else 0
         regiao = (request.form.get("regiao") or "").strip()
         empresa = (request.form.get("empresa") or "").strip() if role == "operador" else None
+        descricao_viaturas = (request.form.get("descricao_viaturas") or "").strip() if role == "operador" else None
         if not username:
             flash("Username é obrigatório.", "danger"); conn.close()
             return redirect(url_for("admin_user_edit", user_id=user_id))
         try:
             cur.execute(
-                "UPDATE funcionarios SET username=?, nome=?, role=?, ativo=?, regiao=?, email=?, empresa=? WHERE id=?",
-                (username, nome or username, role, ativo, regiao, email, empresa, user_id)
+                "UPDATE funcionarios SET username=?, nome=?, role=?, ativo=?, regiao=?, descricao_viaturas=?, email=?, empresa=? WHERE id=?",
+                (username, nome or username, role, ativo, regiao, descricao_viaturas, email, empresa, user_id)
             )
             conn.commit(); flash("Utilizador atualizado.", "info")
             return redirect(url_for("admin_users"))
@@ -3216,10 +3548,14 @@ def registos():
     user_id = session.get("user_id")
     user_role = session.get("role")
     regiao_user = None
+    desc_list_user: list[str] = []
     if user_role in ("operador", "gestor"):
-        cur.execute("SELECT regiao FROM funcionarios WHERE id=?", (user_id,))
+        cur.execute("SELECT regiao, descricao_viaturas FROM funcionarios WHERE id=?", (user_id,))
         row = cur.fetchone()
         regiao_user = (row["regiao"] or "").strip() if row and row["regiao"] else None
+        if user_role == "operador" and not regiao_user:
+            descricao_user = (row["descricao_viaturas"] or "").strip() if row and row["descricao_viaturas"] else ""
+            desc_list_user = parse_descricao_viaturas(descricao_user)
 
     sql = """
         SELECT r.id as registo_id, r.data_hora, r.hora_inicio, r.hora_fim, v.matricula, v.num_frota,
@@ -3238,6 +3574,10 @@ def registos():
     if regiao_user:
         sql += " AND v.regiao = ?"
         params.append(regiao_user)
+    elif user_role == "operador" and desc_list_user:
+        placeholders = ",".join(["?"] * len(desc_list_user))
+        sql += f" AND COALESCE(v.descricao,'') IN ({placeholders})"
+        params.extend(desc_list_user)
     sql += " ORDER BY v.regiao ASC, datetime(r.data_hora) ASC, r.id ASC"
     cur.execute(sql, params)
     registos = [dict(row) for row in cur.fetchall()]
@@ -3271,10 +3611,14 @@ def export_excel():
     user_id = session.get("user_id")
     user_role = session.get("role")
     regiao_user = None
+    desc_list_user: list[str] = []
     if user_role in ("operador", "gestor"):
-        cur.execute("SELECT regiao FROM funcionarios WHERE id=?", (user_id,))
+        cur.execute("SELECT regiao, descricao_viaturas FROM funcionarios WHERE id=?", (user_id,))
         row = cur.fetchone()
         regiao_user = (row["regiao"] or "").strip() if row and row["regiao"] else None
+        if user_role == "operador" and not regiao_user:
+            descricao_user = (row["descricao_viaturas"] or "").strip() if row and row["descricao_viaturas"] else ""
+            desc_list_user = parse_descricao_viaturas(descricao_user)
 
     sql = """
         SELECT
@@ -3306,6 +3650,10 @@ def export_excel():
     if regiao_user and user_role != "admin":
         sql += " AND v.regiao = ?"
         params.append(regiao_user)
+    elif user_role == "operador" and desc_list_user:
+        placeholders = ",".join(["?"] * len(desc_list_user))
+        sql += f" AND COALESCE(v.descricao,'') IN ({placeholders})"
+        params.extend(desc_list_user)
     sql += " ORDER BY datetime(r.data_hora) DESC, r.id DESC"
     df = pd.read_sql_query(sql, conn, params=params)
     conn.close()
@@ -3349,7 +3697,7 @@ def export_excel():
         ]
         df = df[cols]
 
-    fname = EXPORT_DIR / f"registos_limpeza_{mes or 'todos'}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+    fname = EXPORT_DIR / f"registos_limpeza_{mes or 'todos'}_{now_pt().strftime('%Y%m%d_%H%M%S')}.xlsx"
 
     # Sheet principal: registos
     # Sheet secundária: protocolos
@@ -3392,10 +3740,14 @@ def export_registos_excel():
     user_id = session.get("user_id")
     user_role = session.get("role")
     regiao_user = None
+    desc_list_user: list[str] = []
     if user_role in ("operador", "gestor"):
-        cur.execute("SELECT regiao FROM funcionarios WHERE id=?", (user_id,))
+        cur.execute("SELECT regiao, descricao_viaturas FROM funcionarios WHERE id=?", (user_id,))
         row = cur.fetchone()
         regiao_user = (row["regiao"] or "").strip() if row and row["regiao"] else None
+        if user_role == "operador" and not regiao_user:
+            descricao_user = (row["descricao_viaturas"] or "").strip() if row and row["descricao_viaturas"] else ""
+            desc_list_user = parse_descricao_viaturas(descricao_user)
 
     sql = """
         SELECT
@@ -3427,6 +3779,10 @@ def export_registos_excel():
     if regiao_user and user_role != "admin":
         sql += " AND v.regiao = ?"
         params.append(regiao_user)
+    elif user_role == "operador" and desc_list_user:
+        placeholders = ",".join(["?"] * len(desc_list_user))
+        sql += f" AND COALESCE(v.descricao,'') IN ({placeholders})"
+        params.extend(desc_list_user)
     sql += " ORDER BY datetime(r.data_hora) DESC, r.id DESC"
     df = pd.read_sql_query(sql, conn, params=params)
     conn.close()
@@ -3466,7 +3822,7 @@ def export_registos_excel():
         ]
         df = df[cols]
 
-    fname = EXPORT_DIR / f"registos_limpeza_{mes or 'todos'}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+    fname = EXPORT_DIR / f"registos_limpeza_{mes or 'todos'}_{now_pt().strftime('%Y%m%d_%H%M%S')}.xlsx"
 
     # Sheet principal: registos
     # Sheet secundária: protocolos
