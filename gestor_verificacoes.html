@@ -1,5 +1,15 @@
 {% extends "base.html" %}
 {% block content %}
+  <style>
+    .gestor-actions-top { margin-bottom:1rem;display:flex;gap:10px;align-items:center;flex-wrap:wrap; }
+    .gestor-actions-bottom { margin-top:1rem;display:flex;gap:10px;align-items:center; }
+    .gestor-frota-search { min-width:220px; }
+    @media (max-width: 768px) {
+      .gestor-actions-top, .gestor-actions-bottom { flex-direction:column; align-items:stretch; }
+      .gestor-actions-top label { margin-left:0 !important; }
+      .gestor-frota-search { min-width:0; width:100%; }
+    }
+  </style>
   <h2>Inspeção de Viaturas (Gestor)</h2>
   <p class="muted" style="margin-bottom:1rem;">
     Selecione uma ou mais viaturas da sua região{% if regiao_gestor %} ({{ regiao_gestor }}){% endif %}
@@ -11,11 +21,11 @@
     <div class="muted">Não existem viaturas ativas na sua região.</div>
   {% else %}
     <form method="post">
-      <div style="margin-bottom:1rem;display:flex;gap:10px;align-items:center;flex-wrap:wrap;">
+      <div class="gestor-actions-top">
         <button class="btn btn-primary" type="submit">Guardar inspeções</button>
         <a class="btn" href="{{ url_for('home') }}">Cancelar</a>
         <label style="margin-left:auto;">Pesquisar Nº frota
-          <input type="text" id="pesquisa_frota" placeholder="Digite o nº de frota" style="min-width:220px;">
+          <input type="text" id="pesquisa_frota" class="gestor-frota-search" placeholder="Digite o nº de frota">
         </label>
       </div>
       <table style="width:100%;border-collapse:collapse;">
@@ -61,7 +71,7 @@
           {% endfor %}
         </tbody>
       </table>
-      <div style="margin-top:1rem;display:flex;gap:10px;align-items:center;">
+      <div class="gestor-actions-bottom">
         <button class="btn btn-primary" type="submit">Guardar inspeções</button>
         <a class="btn" href="{{ url_for('home') }}">Cancelar</a>
       </div>

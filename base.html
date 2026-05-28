@@ -17,7 +17,43 @@
     table { width: 100%; border-collapse: collapse; }
     th, td { padding: 8px; border-bottom: 1px solid #eee; text-align: left; }
     thead th { background: #f1f5f9; }
+    img { max-width: 100%; height: auto; }
+    .table-scroll { width: 100%; overflow-x: auto; }
+    .table-scroll table { min-width: 760px; }
+    .row { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+    .row > label { min-width: 0; }
+    input, select, textarea { max-width: 100%; box-sizing: border-box; }
     @page { margin: 15mm 15mm 20mm 15mm; }
+    @media (max-width: 900px) {
+      nav {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        align-items: stretch;
+      }
+      nav .btn {
+        flex: 1 1 170px;
+        text-align: center;
+      }
+      nav span[style*="margin-left:auto"] {
+        margin-left: 0 !important;
+        width: 100%;
+        justify-content: space-between;
+      }
+    }
+    @media (max-width: 768px) {
+      main { padding: 12px; }
+      .app-title { font-size: 1.15rem; }
+      .row { grid-template-columns: 1fr !important; }
+      .btn, .btn-primary {
+        width: 100%;
+        text-align: center;
+      }
+      p > .btn, p > button.btn {
+        display: block;
+        margin-bottom: 8px;
+      }
+    }
     @media print {
       footer.app-footer { position: fixed; bottom: 0; left: 0; right: 0; background: white; }
       main { padding-bottom: 22mm; }
@@ -85,6 +121,18 @@
   <main>
     {% block content %}{% endblock %}
   </main>
+  <script>
+    // Envolve tabelas em contentor com scroll horizontal para ecrãs pequenos.
+    document.addEventListener("DOMContentLoaded", function () {
+      document.querySelectorAll("main table").forEach(function (table) {
+        if (table.closest(".table-scroll")) return;
+        var wrapper = document.createElement("div");
+        wrapper.className = "table-scroll";
+        table.parentNode.insertBefore(wrapper, table);
+        wrapper.appendChild(table);
+      });
+    });
+  </script>
   <footer class="app-footer">
     {{ signature or 'Created by Pedro Fonte' }}{% if app_build %} · {{ app_build }}{% endif %}
   </footer>

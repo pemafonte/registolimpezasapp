@@ -1,7 +1,18 @@
 {% extends "base.html" %}
 {% block content %}
+<style>
+  .dash-modal-panel { background:#fff;padding:24px;max-width:600px;margin:60px auto;border-radius:8px;box-shadow:0 2px 12px #0002; }
+  .chart-filter { margin:0; display:inline-flex; gap:.5rem; align-items:center; flex-wrap:wrap; }
+  @media (max-width: 768px) {
+    .dash-modal-panel { margin:16px; padding:16px; max-width:none; }
+    .kpis { grid-template-columns: 1fr 1fr !important; }
+    .grid { grid-template-columns: 1fr !important; gap:14px !important; }
+    .chart-filter { display:flex; width:100%; }
+    .chart-filter input[type="month"] { flex:1; min-width:0; }
+  }
+</style>
 <div id="protoModal" style="display:none;position:fixed;top:0;left:0;width:100vw;height:100vh;background:rgba(0,0,0,.3);z-index:999;">
-  <div style="background:#fff;padding:24px;max-width:600px;margin:60px auto;border-radius:8px;box-shadow:0 2px 12px #0002;">
+  <div class="dash-modal-panel">
     <h3>Viaturas limpas por protocolo</h3>
     <div id="protoModalContent"></div>
     <button class="btn" onclick="document.getElementById('protoModal').style.display='none'">Fechar</button>
@@ -126,7 +137,7 @@
   <div class="card" style="min-width:0;">
     <div style="display:flex;align-items:center;gap:1rem;">
       <h3 style="margin:0 0 .5rem 0;">Limpezas por local</h3>
-      <form method="get" style="margin:0;display:inline;">
+      <form method="get" class="chart-filter">
         <input type="month" name="mes" value="{{ mes or '' }}" style="padding:2px 6px;">
         <button class="btn" type="submit" style="padding:2px 10px;font-size:.95em;">Filtrar</button>
       </form>

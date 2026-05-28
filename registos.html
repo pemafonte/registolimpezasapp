@@ -1,6 +1,15 @@
 {% extends "base.html" %}
 {% block content %}
-<form method="get" action="{{ url_for('registos') }}">
+<style>
+  .registos-toolbar { display:flex; gap:10px; align-items:end; flex-wrap:wrap; margin-bottom:.5rem; }
+  .registos-actions { display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin-bottom:.5rem; }
+  @media (max-width: 768px) {
+    .registos-toolbar, .registos-actions { flex-direction:column; align-items:stretch; }
+    .registos-toolbar label { width:100%; }
+    .registos-toolbar input[type="month"] { width:100%; }
+  }
+</style>
+<form method="get" action="{{ url_for('registos') }}" class="registos-toolbar">
   <label>Filtrar por mês:
     <input type="month" name="mes" value="{{ mes or '' }}">
   </label>
@@ -9,11 +18,13 @@
     <a class="btn" href="{{ url_for('registos') }}">Limpar filtro</a>
   {% endif %}
 </form>
-{% if mes %}
-  <a class="btn btn-primary" href="{{ url_for('export_registos_excel', mes=mes) }}">Exportar Excel (mês)</a>
-{% else %}
-  <a class="btn btn-primary" href="{{ url_for('export_registos_excel') }}">Exportar Excel (todos)</a>
-{% endif %}
+<div class="registos-actions">
+  {% if mes %}
+    <a class="btn btn-primary" href="{{ url_for('export_registos_excel', mes=mes) }}">Exportar Excel (mês)</a>
+  {% else %}
+    <a class="btn btn-primary" href="{{ url_for('export_registos_excel') }}">Exportar Excel (todos)</a>
+  {% endif %}
+</div>
 {% if session.get('role') in ['gestor', 'admin'] %}
   <p class="muted" style="margin-top:0.5rem;">
     A exportação inclui uma folha extra <strong>Inspeções viaturas</strong> com o histórico completo de inspeções (todas as datas por viatura).
