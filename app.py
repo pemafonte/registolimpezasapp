@@ -142,7 +142,17 @@ def _gestor_viaturas_para_inspecao(cur, ph, regiao_gestor: str | None):
         """,
         params,
     )
-    return [dict(x) for x in cur.fetchall()]
+    hoje = today_pt_iso()
+    rows: list[dict] = []
+    for x in cur.fetchall():
+        item = dict(x)
+        verif_data = (item.get("verificacao_em") or "")[:10]
+        if verif_data != hoje:
+            # Mantém a data da última inspeção, mas evita pré-preencher estado/comentário no novo dia.
+            item["verificacao_limpeza"] = None
+            item["comentarios_verificacao"] = None
+        rows.append(item)
+    return rows
 
 
 def _processar_inspecoes_viaturas_gestor(
@@ -2458,9 +2468,13 @@ def viaturas():
                 dias_desde = (hoje - datetime.fromisoformat(verif_em[:10]).date()).days
             except Exception:
                 dias_desde = None
-            v["inspecao_verificada"] = v.get("verificacao_limpeza")
+            if dias_desde == 0:
+                v["inspecao_verificada"] = v.get("verificacao_limpeza")
+                v["inspecao_comentarios"] = v.get("comentarios_verificacao")
+            else:
+                v["inspecao_verificada"] = None
+                v["inspecao_comentarios"] = None
             v["inspecao_dias"] = dias_desde
-            v["inspecao_comentarios"] = v.get("comentarios_verificacao")
         else:
             v["inspecao_verificada"] = v.get("verificacao_limpeza") or None
             v["inspecao_dias"] = None
@@ -3247,6 +3261,7 @@ def novo_registo():
         conn.close()
         return redirect(url_for("novo_registo"))
 
+    operator_allowed_by_desc = False
     # Enforce de acesso: operador pode criar registos apenas nas viaturas permitidas
     if user_role == "operador":
         cur.execute("SELECT regiao, descricao FROM viaturas WHERE id=?", (viatura_id,))
@@ -3259,6 +3274,7 @@ def novo_registo():
         v_desc = (vrow["descricao"] or "").strip()
         allowed_by_regiao = bool(regiao_operador and v_regiao == regiao_operador)
         allowed_by_desc = bool(desc_list_operador and v_desc in desc_list_operador)
+        operator_allowed_by_desc = allowed_by_desc
         if not (allowed_by_regiao or allowed_by_desc):
             flash("Sem permissão para esta viatura.", "danger")
             conn.close()
@@ -3274,6 +3290,9 @@ def novo_registo():
     pedido_autorizado = pedido_autorizado_hoje(viatura_id, funcionario_id)
     extra_autorizada = 1 if pedido_autorizado else 0
     responsavel_autorizacao = None
+    if ja_limpo_hoje and user_role == "operador" and operator_allowed_by_desc and not pedido_autorizado:
+        extra_autorizada = 1
+        responsavel_autorizacao = "Acesso por descrição"
     if pedido_autorizado:
         cur.execute("""
             SELECT f.nome
@@ -3295,7 +3314,7 @@ def novo_registo():
         return redirect(url_for("novo_registo"))
     
     # Se já foi limpa hoje e não tem autorização, pede autorização
-    if ja_limpo_hoje and not pedido_autorizado:
+    if ja_limpo_hoje and not pedido_autorizado and not (user_role == "operador" and operator_allowed_by_desc):
         flash("Viatura já efetuou limpeza hoje, solicite autorização para limpeza extra.", "warning")
         viaturas_sql = "SELECT id, matricula, descricao, num_frota FROM viaturas WHERE ativo=1"
         viaturas_params = []

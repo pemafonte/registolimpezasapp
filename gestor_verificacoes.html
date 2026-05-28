@@ -11,6 +11,13 @@
     <div class="muted">Não existem viaturas ativas na sua região.</div>
   {% else %}
     <form method="post">
+      <div style="margin-bottom:1rem;display:flex;gap:10px;align-items:center;flex-wrap:wrap;">
+        <button class="btn btn-primary" type="submit">Guardar inspeções</button>
+        <a class="btn" href="{{ url_for('home') }}">Cancelar</a>
+        <label style="margin-left:auto;">Pesquisar Nº frota
+          <input type="text" id="pesquisa_frota" placeholder="Digite o nº de frota" style="min-width:220px;">
+        </label>
+      </div>
       <table style="width:100%;border-collapse:collapse;">
         <thead>
           <tr>
@@ -27,7 +34,7 @@
           {% for it in viaturas %}
             {% set vid = it.viatura_id %}
             {% set sk = (it.verificacao_limpeza or '')|lower %}
-            <tr>
+            <tr data-num-frota="{{ (it.num_frota or '')|lower }}">
               <td>
                 <input type="checkbox" name="viaturas" value="{{ vid }}">
               </td>
@@ -70,6 +77,17 @@
         {% for it in viaturas %}
           toggleComent({{ it.viatura_id }});
         {% endfor %}
+
+        const pesquisa = document.getElementById('pesquisa_frota');
+        const rows = Array.from(document.querySelectorAll('tbody tr[data-num-frota]'));
+        if (!pesquisa) return;
+        pesquisa.addEventListener('input', () => {
+          const q = (pesquisa.value || '').trim().toLowerCase();
+          rows.forEach((tr) => {
+            const frota = tr.getAttribute('data-num-frota') || '';
+            tr.style.display = (!q || frota.includes(q)) ? '' : 'none';
+          });
+        });
       });
     </script>
   {% endif %}
